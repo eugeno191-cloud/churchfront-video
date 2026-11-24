@@ -90,18 +90,34 @@ struct FreeShowSetup: Codable, Equatable {
     /// The switcher input FreeShow's output feeds.
     var input = 3
     var bumpers: [Bumper] = []
+    /// Play bumpers on the stream output only: while one plays, the outputs in `lockOutputs`
+    /// are locked in FreeShow (so the video skips them), and the stream output's style is
+    /// lifted so the video shows; both are put back after.
+    var streamOnly = false
+    /// FreeShow's stream output, by name or id.
+    var streamOutput = "Live Stream"
+    /// The stream output's style id, put back after the bumper. Empty: its style isn't lifted.
+    var streamStyle = ""
+    /// FreeShow output ids kept off while a bumper plays ("default" is the first, usually the projector).
+    var lockOutputs = ["default"]
 
-    init(host: String = "", port: Int = 5506, input: Int = 3, bumpers: [Bumper] = []) {
+    init(host: String = "", port: Int = 5506, input: Int = 3, bumpers: [Bumper] = [],
+         streamOnly: Bool = false, streamOutput: String = "Live Stream", streamStyle: String = "", lockOutputs: [String] = ["default"]) {
         self.host = host; self.port = port; self.input = input; self.bumpers = bumpers
+        self.streamOnly = streamOnly; self.streamOutput = streamOutput; self.streamStyle = streamStyle; self.lockOutputs = lockOutputs
     }
 
-    private enum Keys: String, CodingKey { case host, port, input, bumpers }
+    private enum Keys: String, CodingKey { case host, port, input, bumpers, streamOnly, streamOutput, streamStyle, lockOutputs }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         host = try c.decodeIfPresent(String.self, forKey: .host) ?? ""
         port = try c.decodeIfPresent(Int.self, forKey: .port) ?? 5506
         input = try c.decodeIfPresent(Int.self, forKey: .input) ?? 3
         bumpers = try c.decodeIfPresent([Bumper].self, forKey: .bumpers) ?? []
+        streamOnly = try c.decodeIfPresent(Bool.self, forKey: .streamOnly) ?? false
+        streamOutput = try c.decodeIfPresent(String.self, forKey: .streamOutput) ?? "Live Stream"
+        streamStyle = try c.decodeIfPresent(String.self, forKey: .streamStyle) ?? ""
+        lockOutputs = try c.decodeIfPresent([String].self, forKey: .lockOutputs) ?? ["default"]
     }
 }
 

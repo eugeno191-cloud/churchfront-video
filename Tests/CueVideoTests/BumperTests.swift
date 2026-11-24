@@ -72,10 +72,64 @@ final class BumperTests: XCTestCase {
         wait(3) { self.booth.atem.state.preview[0] == 2 && self.booth.atem.state.program[0] == 1 }
     }
 
-    func player(password: String? = nil) -> BumperPlayer {
+    func player(password: String? = nil, streamOnly: Bool = false) -> BumperPlayer {
         BumperPlayer(booth: booth, session: FakeFreeShow.session, password: { password }) {
-            FreeShowSetup(host: "10.0.0.60", input: 3, bumpers: [self.welcome])
+            FreeShowSetup(host: "10.0.0.60", input: 3, bumpers: [self.welcome], streamOnly: streamOnly,
+                          streamOutput: "Live Stream", streamStyle: "566104ca88d", lockOutputs: ["default"])
         }
+    }
+
+    /// The FreeShow commands sent, in order, leaving out the "time left" questions.
+    var steps: [String] {
+        FakeFreeShow.actions.compactMap { a -> String? in
+            guard let name = a["action"] as? String, name != "get_playing_video_time_left" else { return nil }
+            switch name {
+            case "lock_output": return "lock \(a["outputId"] ?? "") \(a["value"] as? Bool == true ? "on" : "off")"
+            case "change_output_style": return "style \(a["outputId"] ?? "") \((a["styleId"] as? String).map { $0.isEmpty ? "none" : $0 } ?? "?")"
+            default: return name
+            }
+        }
+    }
+
+    func testStreamOnlyLocksTheProjectorAndPutsEverythingBack() {
+        let p = player(streamOnly: true)
+        var started: String?? = .none
+        p.play(welcome) { started = .some($0) }
+        wait(3) { started != nil }
+        XCTAssertEqual(started, .some(nil))
+        wait(6) { p.phase == .idle }
+        XCTAssertEqual(steps, ["lock default on", "style Live Stream none", "play_media",
+                               "clear_background", "style Live Stream 566104ca88d", "lock default off"])
+        XCTAssertEqual(booth.atem.state.program[0], 1)
+    }
+
+    func testStreamOnlyIsPutBackWhenTheVideoNeverStarts() {
+        FakeFreeShow.length = 0
+        let p = player(streamOnly: true)
+        var started: String?? = .none
+        p.play(welcome) { started = .some($0) }
+        wait(BumperPlayer.startWait + 3) { started != nil }
+        XCTAssertEqual(Array(steps.suffix(2)), ["style Live Stream 566104ca88d", "lock default off"])
+    }
+
+    func testStreamOnlyIsPutBackWhenStoppedEarly() {
+        FakeFreeShow.length = 30
+        let p = player(streamOnly: true)
+        var started: String?? = .none
+        p.play(welcome) { started = .some($0) }
+        wait(3) { started != nil }
+        p.stop()
+        wait(4) { p.phase == .idle }
+        XCTAssertEqual(Array(steps.suffix(3)), ["clear_background", "style Live Stream 566104ca88d", "lock default off"])
+    }
+
+    func testWithoutStreamOnlyNothingIsLocked() {
+        let p = player()
+        var started: String?? = .none
+        p.play(welcome) { started = .some($0) }
+        wait(3) { started != nil }
+        wait(6) { p.phase == .idle }
+        XCTAssertFalse(steps.contains { $0.hasPrefix("lock") || $0.hasPrefix("style") })
     }
 
     private func wait(_ seconds: Double, until: () -> Bool) {

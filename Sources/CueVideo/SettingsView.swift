@@ -448,6 +448,22 @@ struct FreeShowCard: View {
     @State private var newName = ""
     @State private var newPath = ""
     @State private var testing: String?
+    @State private var fillNote: String?
+
+    /// Fills the stream-only fields from FreeShow's settings on this Mac.
+    private func fillFromLocal() {
+        guard let outs = LocalFreeShow.outputs(), !outs.isEmpty else { fillNote = "No FreeShow outputs found on this Mac."; return }
+        let stream = outs.first { $0.ndi } ?? outs.first { $0.name.lowercased().contains("stream") }
+        guard let stream else { fillNote = "None of FreeShow's outputs sends NDI or is called stream. Fill these in by hand."; return }
+        let others = outs.filter { $0.id != stream.id }
+        store.update { c in
+            c.freeshow.streamOutput = stream.name
+            c.freeshow.streamStyle = stream.style
+            c.freeshow.lockOutputs = others.map(\.id)
+        }
+        fillNote = "Stream output: \(stream.name) (style \(stream.style.isEmpty ? "none" : stream.style)). Kept off: " +
+            (others.isEmpty ? "nothing else" : others.map { "\($0.name) (\($0.id))" }.joined(separator: ", ")) + "."
+    }
 
     var body: some View {
         let fs = store.config.freeshow
@@ -479,6 +495,37 @@ struct FreeShowCard: View {
                     Button("Remove") { SavedLogin.freeshow.clear(); saved = false; note = "Removed." }.buttonStyle(CueButton(kind: .danger))
                 }
                 if let note { Text(note).font(.sans(12)).foregroundStyle(T.inkMuted) }
+            }
+            row("Stream only") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Toggle("Play bumpers on the stream output only, not the projector", isOn: Binding(
+                        get: { fs.streamOnly }, set: { v in store.update { $0.freeshow.streamOnly = v } }))
+                        .toggleStyle(.checkbox).font(.sans(13))
+                    if fs.streamOnly {
+                        Text("While a bumper plays, the outputs below are locked in FreeShow (they keep showing what they had, and ignore slide changes until it ends), and the stream output's style is lifted so the video shows instead of green. Both are put back when it ends.")
+                            .font(.sans(12)).foregroundStyle(T.inkSubtle).fixedSize(horizontal: false, vertical: true).frame(maxWidth: 520, alignment: .leading)
+                        HStack(spacing: T.s2) {
+                            Text("Stream output").font(.sans(12)).foregroundStyle(T.inkMuted).frame(width: 110, alignment: .leading)
+                            TextField("Live Stream", text: Binding(get: { fs.streamOutput }, set: { v in store.update { $0.freeshow.streamOutput = v } }))
+                                .textFieldStyle(CueFieldStyle()).frame(width: 160)
+                            Text("its style id").font(.sans(12)).foregroundStyle(T.inkMuted)
+                            TextField("put back after", text: Binding(get: { fs.streamStyle }, set: { v in store.update { $0.freeshow.streamStyle = v.trimmingCharacters(in: .whitespaces) } }))
+                                .textFieldStyle(CueFieldStyle()).frame(width: 130)
+                        }
+                        HStack(spacing: T.s2) {
+                            Text("Keep it off").font(.sans(12)).foregroundStyle(T.inkMuted).frame(width: 110, alignment: .leading)
+                            TextField("output ids, such as default", text: Binding(
+                                get: { fs.lockOutputs.joined(separator: ", ") },
+                                set: { v in store.update { $0.freeshow.lockOutputs = v.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } } }))
+                                .textFieldStyle(CueFieldStyle()).frame(width: 300)
+                        }
+                        if LocalFreeShow.outputs() != nil {
+                            Button("Fill in from FreeShow on this Mac") { fillFromLocal() }.buttonStyle(CueButton())
+                                .help("Reads FreeShow's outputs on this Mac: the stream output is the one sending NDI; the others are kept off.")
+                        }
+                        if let fillNote { Text(fillNote).font(.sans(12)).foregroundStyle(T.inkMuted).fixedSize(horizontal: false, vertical: true) }
+                    }
+                }
             }
             row("Bumpers") {
                 VStack(alignment: .leading, spacing: 6) {

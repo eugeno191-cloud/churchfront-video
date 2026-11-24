@@ -74,6 +74,34 @@ final class FreeShowClient {
     }
 
     func clearBackground() async throws { try await send("clear_background") }
+
+    /// Locks an output (by id) so new content skips it, or unlocks it.
+    func lock(_ outputId: String, _ locked: Bool) async throws {
+        try await send("lock_output", ["outputId": outputId, "value": locked])
+    }
+
+    /// Sets an output's style (output by name or id, style by id; "" for no style).
+    func setStyle(output: String, style: String) async throws {
+        try await send("change_output_style", ["outputId": output, "styleId": style])
+    }
+}
+
+/// FreeShow's outputs as its settings file on this Mac has them, for filling in Setup when
+/// FreeShow runs on the same Mac. Nil when there's no FreeShow here.
+enum LocalFreeShow {
+    struct Output { let id: String; let name: String; let style: String; let ndi: Bool }
+
+    static func outputs() -> [Output]? {
+        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("freeshow/settings.json")
+        guard let data = try? Data(contentsOf: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let outs = json["outputs"] as? [String: [String: Any]] else { return nil }
+        return outs.compactMap { id, o in
+            guard o["enabled"] as? Bool != false, o["stageOutput"] == nil || o["stageOutput"] is NSNull else { return nil }
+            return Output(id: id, name: o["name"] as? String ?? id, style: o["style"] as? String ?? "", ndi: o["ndi"] as? Bool ?? false)
+        }.sorted { $0.name < $1.name }
+    }
 }
 
 /// Plays a bumper: FreeShow starts the video, the switcher fades to FreeShow's input once it's
@@ -97,6 +125,8 @@ final class BumperPlayer: ObservableObject {
     /// Bumped to call off whatever the play loop is doing (Stop, or a new setup).
     private var run = 0
     private var returnTo: (live: Int?, next: Int?) = (nil, nil)
+    /// While a stream-only bumper runs: what was changed in FreeShow, to put back.
+    private var changed: (locked: [String], style: (output: String, id: String)?) = ([], nil)
 
     /// `setup` replaces the app's setup (for tests, which must never touch the real setup file).
     init(booth: Booth = .shared, session: URLSession? = nil,
@@ -133,6 +163,7 @@ final class BumperPlayer: ObservableObject {
             var told = false
             func tell(_ why: String?) { if !told { told = true; started?(why) } }
             do {
+                try await self.prepare(client)
                 try await client.play(b.path)
                 // Wait for the video to be running before anything goes to air. A long file
                 // can take FreeShow several seconds to load (a 5-minute one took about 4).
@@ -142,7 +173,11 @@ final class BumperPlayer: ObservableObject {
                     if left > 0 || r != self.run { break }
                     try await Task.sleep(nanoseconds: 200_000_000)
                 }
-                guard r == self.run else { tell("Stopped before it went on air."); return }
+                guard r == self.run else {
+                    try? await client.clearBackground()
+                    await self.putBack(client)
+                    tell("Stopped before it went on air."); return
+                }
                 guard left > 0 else { throw FreeShowError.didNotStart }
                 if atem.state.program[me] != input {
                     atem.setPreview(input, me: me)
@@ -162,10 +197,10 @@ final class BumperPlayer: ObservableObject {
                 guard r == self.run else { return }
                 await self.fadeBack(client)
             } catch {
-                guard r == self.run else { tell("Stopped before it went on air."); return }
+                guard r == self.run else { await self.putBack(client); tell("Stopped before it went on air."); return }
                 let why = (error as? FreeShowError)?.description ?? "\(error)"
                 self.problem = why
-                if self.phase == .playing { await self.fadeBack(client) } else { self.reset() }
+                if self.phase == .playing { await self.fadeBack(client) } else { await self.putBack(client); self.reset() }
                 tell(why)
             }
         }
@@ -177,7 +212,7 @@ final class BumperPlayer: ObservableObject {
         run += 1
         let wasPlaying = phase == .playing
         Task { @MainActor in
-            if wasPlaying { await self.fadeBack(client) } else { try? await client.clearBackground(); self.reset() }
+            if wasPlaying { await self.fadeBack(client) } else { try? await client.clearBackground(); await self.putBack(client); self.reset() }
         }
     }
 
@@ -194,7 +229,34 @@ final class BumperPlayer: ObservableObject {
             if let next = returnTo.next, next != input, atem.state.preview[me] != next { atem.setPreview(next, me: me) }
         }
         try? await client.clearBackground()
+        await putBack(client)
         reset()
+    }
+
+    /// For a stream-only bumper: lock the other outputs and lift the stream output's style.
+    /// Anything done is remembered first, so it's put back even if a later step fails.
+    @MainActor
+    private func prepare(_ client: FreeShowClient) async throws {
+        changed = ([], nil)
+        let s = setup
+        guard s.streamOnly else { return }
+        for id in s.lockOutputs where !id.isEmpty {
+            changed.locked.append(id)
+            try await client.lock(id, true)
+        }
+        if !s.streamStyle.isEmpty {
+            changed.style = (s.streamOutput, s.streamStyle)
+            try await client.setStyle(output: s.streamOutput, style: "")
+        }
+    }
+
+    /// Puts FreeShow's outputs back as they were before a stream-only bumper.
+    @MainActor
+    private func putBack(_ client: FreeShowClient) async {
+        let c = changed
+        changed = ([], nil)
+        if let st = c.style { try? await client.setStyle(output: st.output, style: st.id) }
+        for id in c.locked { try? await client.lock(id, false) }
     }
 
     private func reset() {
