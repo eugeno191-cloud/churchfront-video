@@ -35,7 +35,7 @@ class FreeShow(BaseHTTPRequestHandler):
             self.send_response(204)
             self.end_headers()
             return
-        data = json.dumps(out).encode()
+        data = json.dumps({"action": action, "data": out}).encode()  # as FreeShow answers
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))

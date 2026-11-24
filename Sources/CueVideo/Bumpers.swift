@@ -37,8 +37,8 @@ final class FreeShowClient {
         }
     }
 
-    /// Sends one action. Returns what FreeShow answered, or nil for its empty answer (it gives
-    /// none when the result is 0 or nothing).
+    /// Sends one action. Returns what FreeShow answered: the "data" of its {"action", "data"}
+    /// answer, or nil for an empty answer.
     @discardableResult
     func send(_ action: String, _ extra: [String: Any] = [:]) async throws -> Any? {
         guard !host.isEmpty, let url = URL(string: "http://\(host):\(port)/") else { throw FreeShowError.unreachable("no address set") }
@@ -53,7 +53,10 @@ final class FreeShowClient {
         if code == 401 { throw FreeShowError.password }
         if code == 204 || data.isEmpty { return nil }
         guard (200..<300).contains(code) else { throw FreeShowError.unreachable("it answered \(code)") }
-        return try? JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed)
+        let json = try? JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed)
+        // FreeShow answers {"action": "...", "data": value}; older versions sent the value alone.
+        if let d = json as? [String: Any], d["action"] != nil { return d["data"] }
+        return json
     }
 
     /// Plays a video file once, with its sound (FreeShow loops and mutes by default).

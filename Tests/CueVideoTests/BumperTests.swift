@@ -46,9 +46,10 @@ final class FakeFreeShow: URLProtocol {
             case "get_playing_video_time_left":
                 if let s = Self.started {
                     let left = Self.length - Date().timeIntervalSince(s)
-                    if left > 0 { status = 200; out = Data(String(left).utf8) }
+                    // As FreeShow answers: {"action": ..., "data": value}.
+                    if left > 0 { status = 200; out = Data(#"{"action":"get_playing_video_time_left","data":\#(left)}"#.utf8) }
                 }
-            case "get_cleared": status = 200; out = Data(#"{"background":true}"#.utf8)
+            case "get_cleared": status = 200; out = Data(#"{"action":"get_cleared","data":{"background":true}}"#.utf8)
             default: break
             }
         }
@@ -136,6 +137,14 @@ final class BumperTests: XCTestCase {
         do { _ = try await wrong.send("get_cleared"); XCTFail("should be turned down") } catch {
             XCTAssertEqual(error as? FreeShowError, .password)
         }
+    }
+
+    func testTheWrappedAnswerIsRead() async throws {
+        FakeFreeShow.length = 30
+        let c = FreeShowClient(host: "10.0.0.60", port: 5506, session: FakeFreeShow.session) { nil }
+        try await c.play("/v/w.mp4")
+        let left = try await c.timeLeft()
+        XCTAssertGreaterThan(left, 25)
     }
 
     func testNothingPlayingReadsAsZeroLeft() async throws {
