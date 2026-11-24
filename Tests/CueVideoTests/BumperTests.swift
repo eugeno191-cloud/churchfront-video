@@ -98,7 +98,7 @@ final class BumperTests: XCTestCase {
         wait(3) { started != nil }
         XCTAssertEqual(started, .some(nil))
         wait(6) { p.phase == .idle }
-        XCTAssertEqual(steps, ["lock default on", "style Live Stream none", "play_media",
+        XCTAssertEqual(steps, ["lock default on", "style Live Stream none", "play_media", "clear_slide", "clear_overlays",
                                "clear_background", "style Live Stream 566104ca88d", "lock default off"])
         XCTAssertEqual(booth.atem.state.program[0], 1)
     }
@@ -110,6 +110,7 @@ final class BumperTests: XCTestCase {
         p.play(welcome) { started = .some($0) }
         wait(BumperPlayer.startWait + 3) { started != nil }
         XCTAssertEqual(Array(steps.suffix(2)), ["style Live Stream 566104ca88d", "lock default off"])
+        XCTAssertFalse(steps.contains("clear_slide"), "a bumper that never starts leaves the words alone")
     }
 
     func testStreamOnlyIsPutBackWhenStoppedEarly() {
@@ -130,6 +131,7 @@ final class BumperTests: XCTestCase {
         wait(3) { started != nil }
         wait(6) { p.phase == .idle }
         XCTAssertFalse(steps.contains { $0.hasPrefix("lock") || $0.hasPrefix("style") })
+        XCTAssertTrue(steps.contains("clear_slide"), "the words come off the outputs the bumper plays on")
     }
 
     private func wait(_ seconds: Double, until: () -> Bool) {

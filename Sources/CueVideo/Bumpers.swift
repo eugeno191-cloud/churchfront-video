@@ -75,6 +75,13 @@ final class FreeShowClient {
 
     func clearBackground() async throws { try await send("clear_background") }
 
+    /// Takes the slide (verses, lyrics) and overlays off the active outputs, so only the
+    /// bumper shows. Locked outputs keep theirs.
+    func clearWords() async throws {
+        try await send("clear_slide")
+        try await send("clear_overlays")
+    }
+
     /// Locks an output (by id) so new content skips it, or unlocks it.
     func lock(_ outputId: String, _ locked: Bool) async throws {
         try await send("lock_output", ["outputId": outputId, "value": locked])
@@ -179,6 +186,9 @@ final class BumperPlayer: ObservableObject {
                     tell("Stopped before it went on air."); return
                 }
                 guard left > 0 else { throw FreeShowError.didNotStart }
+                // The video is running: take any verse, lyric or overlay off it, so nothing
+                // is laid over the bumper. (With stream only, the projector is locked and keeps its words.)
+                try? await client.clearWords()
                 if atem.state.program[me] != input {
                     atem.setPreview(input, me: me)
                     try await Task.sleep(nanoseconds: 80_000_000)
