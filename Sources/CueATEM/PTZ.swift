@@ -941,6 +941,9 @@ final class CanonLink: PTZLink {
 
 public final class PTZController: ObservableObject {
     @Published public var cameras: [PTZCamera] = [] { didSet { save(); if links(differ: oldValue) { restart() } } }
+    /// Called on the main thread after a position shot is saved or updated to where the
+    /// camera is now: the camera, then the shot. CueVideo takes the shot's picture here.
+    public var onShotSaved: ((UUID, UUID) -> Void)?
     /// The camera the joystick, zoom and arrow keys drive. When it changes while the old
     /// camera is being moved by hand (Next was cut to Live with the joystick still held),
     /// the old camera is stopped, so it is never left moving on Live.
@@ -1178,15 +1181,20 @@ public final class PTZController: ObservableObject {
             l.readShotPosition { p in
                 DispatchQueue.main.async {
                     guard let p, let i = self.cameras.firstIndex(where: { $0.id == id }) else { done?(false); return }
+                    let shot: UUID
                     if let r = replacing, let j = self.cameras[i].shots.firstIndex(where: { $0.id == r }) {
                         self.cameras[i].shots[j].kind = .position
                         self.cameras[i].shots[j].pan = p.pan
                         self.cameras[i].shots[j].tilt = p.tilt
                         self.cameras[i].shots[j].zoom = p.zoom
                         if !name.isEmpty { self.cameras[i].shots[j].name = name }
+                        shot = r
                     } else {
-                        self.cameras[i].shots.append(PTZShot(name: name.isEmpty ? "Shot \(self.cameras[i].shots.count + 1)" : name, p))
+                        let s = PTZShot(name: name.isEmpty ? "Shot \(self.cameras[i].shots.count + 1)" : name, p)
+                        self.cameras[i].shots.append(s)
+                        shot = s.id
                     }
+                    self.onShotSaved?(id, shot)
                     done?(true)
                 }
             }

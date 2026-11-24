@@ -92,6 +92,7 @@ struct ShotDeck: View {
     @EnvironmentObject var ptz: PTZController
     @EnvironmentObject var store: ConfigStore
     @ObservedObject var deck = ShotDeckState.shared
+    @ObservedObject var pictures = ShotPictures.shared
 
     /// The Live camera, when its tab was tapped. Otherwise the deck shows the camera on Next.
     @State private var viewingLive: UUID?
@@ -139,6 +140,7 @@ struct ShotDeck: View {
             Button("Delete", role: .destructive) {
                 if let d = deleting, let i = ptz.cameras.firstIndex(where: { $0.id == d.camera }) {
                     ptz.cameras[i].shots.removeAll { $0.id == d.shot.id }
+                    ShotPictures.shared.remove(d.shot.id)
                 }
                 deleting = nil
             }
@@ -239,8 +241,11 @@ struct ShotDeck: View {
                             // Shots and the camera's presets each move within their own run on this page.
                             let run = item.isPreset ? (max(nShots, start) - start)...(min(items.count, start + per) - 1 - start)
                                                     : 0...(min(nShots, start + per) - 1 - start)
+                            let shotID: UUID? = { if case .shot(let s) = item { s.id } else { nil } }()
                             DeckTile(item: item, letter: ShotDeckState.letters[slot], used: deck.lastUsed[c.id] == item.key,
-                                     live: live, canDrag: run.count > 1) {
+                                     live: live, canDrag: run.count > 1,
+                                     picture: shotID.flatMap { pictures.image($0) },
+                                     taking: shotID.map { pictures.taking.contains($0) } ?? false) {
                                 go(c) { deck.go(item, camera: c, ptz) }
                             } onLift: {
                                 drag = ShotDrag(camera: c.id, page: page, from: slot, range: run, cell: size)
@@ -264,7 +269,7 @@ struct ShotDeck: View {
     @ViewBuilder func menu(_ item: DeckItem, _ c: PTZCamera) -> some View {
         switch item {
         case .shot(let s):
-            Button("Update to where the camera is now") {
+            Button("Update to where the camera is now (and its picture)") {
                 ptz.saveShot("", camera: c.id, kind: s.kind, replacing: s.id) { if !$0 { problem = Self.noReading } }
             }
             Button("Rename…") { newName = s.name; renaming = (c.id, s) }
@@ -454,6 +459,10 @@ struct DeckTile: View {
     let used: Bool
     let live: Bool
     let canDrag: Bool
+    /// The shot's saved picture, taken when it was saved or last updated.
+    var picture: NSImage? = nil
+    /// Its picture is being taken now.
+    var taking = false
     let action: () -> Void
     let onLift: () -> Void
     let onDrag: (CGSize) -> Void
@@ -465,20 +474,40 @@ struct DeckTile: View {
 
     var body: some View {
         ZStack {
-            Text(item.name).font(.sans(13, .bold)).lineLimit(2).minimumScaleFactor(0.7)
-                .multilineTextAlignment(.center).padding(.horizontal, 24)
+            if let picture {
+                // The picture fills the tile; the name sits on a dark strip along the bottom.
+                // Over a clear frame, so a picture wider or taller than the tile is cropped
+                // rather than making the tile bigger.
+                Color.clear
+                    .overlay { Image(nsImage: picture).resizable().aspectRatio(contentMode: .fill) }
+                    .clipped()
+                    .overlay(alignment: .bottom) {
+                        Text(item.name).font(.sans(11, .bold)).lineLimit(1).minimumScaleFactor(0.7)
+                            .foregroundStyle(.white).padding(.horizontal, 6).padding(.vertical, 3)
+                            .frame(maxWidth: .infinity).background(Color.black.opacity(0.65))
+                    }
+            } else {
+                Text(item.name).font(.sans(13, .bold)).lineLimit(2).minimumScaleFactor(0.7)
+                    .multilineTextAlignment(.center).padding(.horizontal, 24)
+            }
+            if taking { ProgressView().controlSize(.small) }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipShape(RoundedRectangle(cornerRadius: T.rMD))
         .overlay(alignment: .topLeading) {
             Text(letter).font(.sans(10, .bold)).monospaced()
-                .foregroundStyle(used ? T.onAction : T.inkMuted)
+                .foregroundStyle(picture != nil ? .white : (used ? T.onAction : T.inkMuted))
                 .frame(width: 18, height: 16)
+                .background(RoundedRectangle(cornerRadius: 3).fill(picture != nil ? Color.black.opacity(0.6) : .clear))
                 .background(RoundedRectangle(cornerRadius: 3).stroke(used ? T.onAction.opacity(0.5) : T.lineStrong))
                 .padding(4)
         }
         .overlay(alignment: .topTrailing) {
             if used {
-                Text("HERE").font(.sans(9, .bold)).tracking(0.8).foregroundStyle(T.onAction).padding(7)
+                Text("HERE").font(.sans(9, .bold)).tracking(0.8).foregroundStyle(T.onAction)
+                    .padding(.horizontal, picture != nil ? 4 : 0).padding(.vertical, picture != nil ? 1 : 0)
+                    .background(Capsule().fill(picture != nil ? T.accent : .clear))
+                    .padding(picture != nil ? 5 : 7)
             }
         }
         .overlay(alignment: .bottom) {
@@ -488,7 +517,8 @@ struct DeckTile: View {
         }
         .foregroundStyle(used ? T.onAction : T.ink)
         .background(RoundedRectangle(cornerRadius: T.rMD).fill(used ? T.accent : T.surfaceRaised))
-        .overlay(RoundedRectangle(cornerRadius: T.rMD).stroke(lifted || used ? T.accent : (live ? T.program.opacity(0.5) : T.line), lineWidth: lifted ? 2 : 1))
+        .overlay(RoundedRectangle(cornerRadius: T.rMD).stroke(lifted || used ? T.accent : (live ? T.program.opacity(0.5) : T.line),
+                                                              lineWidth: lifted || (used && picture != nil) ? 3 : 1))
         .opacity(lifted ? 1 : (press != nil && !strayed ? 0.7 : (live && !used ? 0.75 : 1)))
         .scaleEffect(lifted ? 1.05 : 1)
         .shadow(color: .black.opacity(lifted ? 0.35 : 0), radius: 6, y: 2)
