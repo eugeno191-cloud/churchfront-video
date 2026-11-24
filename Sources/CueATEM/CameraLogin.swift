@@ -1,19 +1,23 @@
 import Foundation
 import Security
 
-/// The cameras' admin login, kept in this Mac's Keychain (never in the config file).
-/// Only needed for changing presets stored on the cameras themselves; everyday control
-/// and CueVideo's own shots work without it. One login is used for every Canon camera.
-public enum CameraLogin {
-    private static let service = "CueVideo camera admin login"
-    private static let account = "canon"
-    /// The user name alone, kept in the app's preferences so Setup can show it without
-    /// opening the Keychain. It isn't a secret; the password never leaves the Keychain.
-    private static let userKey = "cameraLoginUser"
+/// A user name and password kept in this Mac's Keychain (never in the config file).
+/// The user name alone is also kept in the app's preferences, so Setup can show it
+/// without opening the Keychain. It isn't a secret; the password never leaves the Keychain.
+public struct SavedLogin {
+    let service: String
+    let account: String
+    let userKey: String
 
-    public struct Credential { public let user: String; public let password: String }
+    /// The Canon cameras' admin login.
+    public static let camera = SavedLogin(service: "CueVideo camera admin login", account: "canon", userKey: "cameraLoginUser")
+    /// The Zowietek encoder's login, for starting and stopping its streams and recordings.
+    public static let zowietek = SavedLogin(service: "CueVideo Zowietek login", account: "zowietek", userKey: "zowietekLoginUser")
 
-    public static func load() -> Credential? {
+    public struct Credential: Equatable { public let user: String; public let password: String
+        public init(user: String, password: String) { self.user = user; self.password = password } }
+
+    public func load() -> Credential? {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                                 kSecAttrAccount as String: account, kSecReturnData as String: true,
                                 kSecMatchLimit as String: kSecMatchLimitOne]
@@ -25,7 +29,7 @@ public enum CameraLogin {
 
     /// Saves (or replaces) the login. Returns false if the Keychain refused.
     @discardableResult
-    public static func save(user: String, password: String) -> Bool {
+    public func save(user: String, password: String) -> Bool {
         clear()
         UserDefaults.standard.set(user, forKey: userKey)
         let item: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
@@ -34,7 +38,7 @@ public enum CameraLogin {
         return SecItemAdd(item as CFDictionary, nil) == errSecSuccess
     }
 
-    public static func clear() {
+    public func clear() {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                                 kSecAttrAccount as String: account]
         SecItemDelete(q as CFDictionary)
@@ -43,7 +47,7 @@ public enum CameraLogin {
 
     /// Whether a login is saved. Asks the Keychain only whether the item is there, not for
     /// what's in it, so macOS never asks for the Mac's password to answer this.
-    public static var isSaved: Bool {
+    public var isSaved: Bool {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                                 kSecAttrAccount as String: account, kSecReturnAttributes as String: true,
                                 kSecMatchLimit as String: kSecMatchLimitOne]
@@ -54,8 +58,20 @@ public enum CameraLogin {
     /// The saved user name, for showing in Setup (the password is never shown). Read from
     /// the app's preferences, not the Keychain: opening the Keychain item makes macOS ask
     /// for the Mac's password whenever the app has been rebuilt, and Setup redraws often.
-    /// Nil for a login saved before this was kept (the login still works).
-    public static var savedUser: String? { UserDefaults.standard.string(forKey: userKey) }
+    public var savedUser: String? { UserDefaults.standard.string(forKey: userKey) }
+}
+
+/// The cameras' admin login. Only needed for changing presets stored on the cameras
+/// themselves; everyday control and CueVideo's own shots work without it. One login is
+/// used for every Canon camera.
+public enum CameraLogin {
+    public typealias Credential = SavedLogin.Credential
+    public static func load() -> Credential? { SavedLogin.camera.load() }
+    @discardableResult
+    public static func save(user: String, password: String) -> Bool { SavedLogin.camera.save(user: user, password: password) }
+    public static func clear() { SavedLogin.camera.clear() }
+    public static var isSaved: Bool { SavedLogin.camera.isSaved }
+    public static var savedUser: String? { SavedLogin.camera.savedUser }
 }
 
 /// Answers the camera's login challenge (Basic or Digest) once with the saved login.

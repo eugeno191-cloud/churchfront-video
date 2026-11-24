@@ -53,8 +53,8 @@ enum ControlTools {
         tool("fade_to_black", "Fade everything to black, or back up if already black (Black).", ["me": me]),
         tool("set_key_button", "Turn one of the volunteer key buttons (such as Lower thirds) on or off. Leave out on to toggle.",
              ["button": str("The button's label, such as Lower thirds."), "on": bool("true to put it on air, false to take it off.")], required: ["button"]),
-        tool("set_recording", "Start or stop the switcher's recording.", ["on": bool("true to record.")], required: ["on"]),
-        tool("set_streaming", "Start or stop the switcher's stream.", ["on": bool("true to stream.")], required: ["on"]),
+        tool("set_recording", "Start or stop recording: on the Zowietek encoder when one is set up in Setup (to the storage chosen there), otherwise on the switcher. Confirm with the person before stopping a recording.", ["on": bool("true to record.")], required: ["on"]),
+        tool("set_streaming", "Start or stop the livestream: the Zowietek encoder's chosen stream destinations when one is set up in Setup, otherwise the switcher's stream. It goes out to everyone watching online, so confirm with the person first.", ["on": bool("true to stream.")], required: ["on"]),
 
         // Cameras
         tool("camera_move", "Pan and tilt a camera for a short time, like holding the joystick, then stop. Speeds run -1 to 1 (right and up are positive); small values are slow and smooth.",
@@ -188,6 +188,12 @@ enum ControlTools {
             let want = a["on"] as? Bool ?? !k.isOn(s)
             if want != k.isOn(s) { k.toggle(atem) }
             done(ok("\(k.label) \(want ? "on" : "off") air"))
+        case "set_recording" where ZowietekLink.shared.active && !atem.simulated:
+            guard let on = a["on"] as? Bool else { throw fail("Give on as true (record) or false (stop). Nothing was changed.") }
+            ZowietekLink.shared.setRecording(on) { why in done(why.map { ["error": $0] } ?? ok("Zowietek recording \(on ? "started" : "stopped")")) }
+        case "set_streaming" where ZowietekLink.shared.active && !atem.simulated:
+            guard let on = a["on"] as? Bool else { throw fail("Give on as true (stream) or false (stop). Nothing was changed.") }
+            ZowietekLink.shared.setStreaming(on) { why in done(why.map { ["error": $0] } ?? ok("Zowietek streaming \(on ? "started" : "stopped")")) }
         case "set_recording":
             guard s.hasRecording else { throw fail("This switcher doesn't record.") }
             // Never guess: a call without a clear true or false must not stop the recording.
@@ -659,6 +665,26 @@ enum ControlTools {
         return ["mixes": mixes, "outputs": outs, "buttons": buttons]
     }
 
+    /// The Zowietek encoder, when one is set up: what Stream and Record run then.
+    static func zowietekStatus() -> Any {
+        let z = ZowietekLink.shared
+        guard z.active else { return NSNull() }
+        var d: [String: Any] = ["host": z.setup.host, "answering": z.state != nil, "problem": z.problem as Any? ?? NSNull(),
+                                "login_saved": SavedLogin.zowietek.isSaved,
+                                "note": "set_streaming and set_recording run this box, not the switcher."]
+        if let st = z.state {
+            let chosen = Set(z.chosenStreams(st).map(\.index))
+            d["streams"] = st.streams.map { ["index": $0.index, "name": $0.name, "on": $0.on, "online": $0.online,
+                                             "failed": $0.failed, "started_by_stream_button": chosen.contains($0.index)] as [String: Any] }
+            d["recorders"] = st.recorders.map { ["index": $0.index, "name": $0.name, "recording": $0.recording,
+                                                 "storage_in": $0.mounted, "free_mb": $0.freeMB as Any? ?? NSNull()] as [String: Any] }
+            d["streaming"] = z.streaming
+            d["recording"] = z.recording
+            d["records_to"] = z.recorder(st)?.index as Any? ?? NSNull()
+        }
+        return d
+    }
+
     static func status() -> [String: Any] {
         let s = atem.state
         func src(_ i: Int?) -> Any { i.map { ["input": $0, "name": store.label($0, s)] as [String: Any] } ?? NSNull() }
@@ -723,6 +749,7 @@ enum ControlTools {
                 "streaming": s.hasStreaming ? s.streaming as Any : NSNull(),
                 "sources": s.busSources.map { ["input": $0.id, "short": $0.short, "long": $0.long] },
             ] as [String: Any],
+            "zowietek": zowietekStatus(),
             "volunteer": [
                 "sources": store.volunteerSources(s).map { ["input": $0.input, "label": store.label($0.input, s)] },
                 "key_buttons": store.config.keys.map { ["label": $0.label, "target": $0.target, "on_air": $0.isOn(s)] },

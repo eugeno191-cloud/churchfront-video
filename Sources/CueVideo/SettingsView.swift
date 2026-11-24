@@ -80,7 +80,7 @@ struct SetupTab: View {
             PageHeader(title: "Setup", purpose: page.purpose, help: page.help)
             Segments(items: SetupPage.allCases.map { ($0.title, $0.rawValue) }, selection: $pageRaw)
             switch page {
-            case .switcher: switcher
+            case .switcher: switcher; ZowietekCard()
             case .sources: sources
             case .keys: keyButtons
             case .cameras: cameras
@@ -316,6 +316,113 @@ struct SetupTab: View {
             }
         }
         .frame(maxWidth: 760, alignment: .leading)
+    }
+}
+
+/// The Zowietek encoder that streams and records: its address, its login (kept in the
+/// Keychain), which of its saved streams the Stream button starts, and where Record records.
+struct ZowietekCard: View {
+    @EnvironmentObject var store: ConfigStore
+    @ObservedObject var zowie = ZowietekLink.shared
+    @State private var host = Booth.shared.store.config.zowietek.host
+    @State private var user = SavedLogin.zowietek.savedUser ?? "admin"
+    @State private var password = ""
+    @State private var saved = SavedLogin.zowietek.isSaved
+    @State private var note: String?
+
+    var body: some View {
+        Card(title: "Zowietek encoder",
+             help: "Set this when a Zowietek box (ZowieBox, ZowieCam or ZowiePTZ) does the streaming and recording. The top bar's Stream and Record buttons then start and stop it instead of the switcher. Stream destinations and keys are set on the Zowietek's own web page. The login is kept in this Mac's Keychain, not in the setup file; the factory login is admin / admin.") {
+            row("Address") {
+                TextField("IP address, such as 192.168.0.50", text: $host).textFieldStyle(CueFieldStyle()).frame(width: 240)
+                    .onSubmit(saveHost)
+                Button(store.config.zowietek.host.isEmpty ? "Connect" : "Save") { saveHost() }.buttonStyle(CueButton(kind: .primary))
+                if !store.config.zowietek.host.isEmpty {
+                    Button("Remove") { host = ""; store.update { $0.zowietek = ZowietekSetup() } }.buttonStyle(CueButton(kind: .danger))
+                }
+            }
+            row("Login") {
+                TextField("User name", text: $user).textFieldStyle(CueFieldStyle()).frame(width: 140)
+                SecureField(saved ? "Saved (type to replace)" : "Password", text: $password).textFieldStyle(CueFieldStyle()).frame(width: 180)
+                Button("Save") {
+                    let u = user.trimmingCharacters(in: .whitespaces)
+                    guard !u.isEmpty, !password.isEmpty else { note = "Enter both the user name and the password."; return }
+                    if SavedLogin.zowietek.save(user: u, password: password) {
+                        password = ""; saved = true; note = "Saved in the Keychain."
+                        zowie.loginChanged()
+                    } else { note = "The Keychain didn't accept it. Try again." }
+                }
+                .buttonStyle(CueButton())
+                if saved {
+                    Button("Remove") { SavedLogin.zowietek.clear(); saved = false; password = ""; note = "Removed."; zowie.loginChanged() }
+                        .buttonStyle(CueButton(kind: .danger))
+                }
+                if let note { Text(note).font(.sans(12)).foregroundStyle(T.inkMuted) }
+            }
+            if !store.config.zowietek.host.isEmpty {
+                if let st = zowie.state {
+                    row("Stream button starts") {
+                        if st.streams.isEmpty {
+                            Text("No streams saved on the Zowietek yet. Add one on its web page (http://\(store.config.zowietek.host)).")
+                                .font(.sans(12)).foregroundStyle(T.warning)
+                        } else {
+                            VStack(alignment: .leading, spacing: 4) {
+                                ForEach(st.streams) { s in
+                                    HStack(spacing: T.s2) {
+                                        Toggle(s.name, isOn: Binding(get: { zowie.chosenStreams(st).contains(s) },
+                                                                    set: { choose(s.index, $0, all: st.streams.map(\.index)) }))
+                                            .toggleStyle(.checkbox).font(.sans(13))
+                                        Text(s.online ? "live now" : s.failed ? "couldn't connect" : s.on ? "connecting" : "off")
+                                            .font(.sans(11)).foregroundStyle(s.online ? T.success : s.failed ? T.danger : T.inkSubtle)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    row("Record to") {
+                        if st.recorders.isEmpty {
+                            Text("The Zowietek didn't list any storage.").font(.sans(12)).foregroundStyle(T.warning)
+                        } else {
+                            Segments(items: [("Whichever is in", "")] + st.recorders.map { ("\($0.name)\($0.mounted ? "" : " (empty)")", $0.index) },
+                                     selection: Binding(get: { store.config.zowietek.recorder ?? "" },
+                                                        set: { v in store.update { $0.zowietek.recorder = v.isEmpty ? nil : v } }))
+                            if let r = zowie.recorder(st), let free = r.freeMB {
+                                Text("\(r.name): \(free / 1024) GB free").font(.sans(12)).foregroundStyle(T.inkMuted)
+                            }
+                        }
+                    }
+                }
+                if let p = zowie.problem {
+                    Text(p).font(.sans(12, .semibold)).foregroundStyle(T.danger).fixedSize(horizontal: false, vertical: true)
+                } else if zowie.state == nil {
+                    Text("Reaching the Zowietek…").font(.sans(12)).foregroundStyle(T.inkSubtle)
+                }
+            }
+        }
+        .frame(maxWidth: 760, alignment: .leading)
+    }
+
+    private func row<C: View>(_ label: String, @ViewBuilder _ content: () -> C) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: T.s3) {
+            Text(label).font(.sans(12, .semibold)).foregroundStyle(T.inkMuted).frame(width: 130, alignment: .leading)
+            content()
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func saveHost() {
+        let h = host.trimmingCharacters(in: .whitespaces)
+        store.update { $0.zowietek.host = h }
+    }
+
+    /// Ticks or unticks a stream. Ticking every one goes back to "all" (nil), so streams added
+    /// on the box later are started too.
+    private func choose(_ index: Int, _ on: Bool, all: [Int]) {
+        store.update { c in
+            var set = Set(c.zowietek.streams ?? all)
+            if on { set.insert(index) } else { set.remove(index) }
+            c.zowietek.streams = set.isSuperset(of: all) ? nil : all.filter(set.contains)
+        }
     }
 }
 

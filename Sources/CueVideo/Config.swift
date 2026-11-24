@@ -54,6 +54,27 @@ struct KeyButton: Codable, Hashable, Identifiable {
 
 /// A screen (or other destination) fed by one or more switcher aux outputs, counted from 1.
 /// Auxes listed together switch together, such as a left and right pair.
+/// The Zowietek encoder: { "host": "192.168.0.50", "streams": [1], "recorder": "usb1_0" }.
+/// Its login is kept in the Keychain, not here.
+struct ZowietekSetup: Codable, Equatable {
+    /// The box's IP address. Empty: no Zowietek, and Stream and Record use the switcher.
+    var host = ""
+    /// The saved stream destinations (by the box's index) the Stream button starts. Missing: all of them.
+    var streams: [Int]?
+    /// Where Record records: "usb1_0", "sdcard_0" or "nas1_0". Missing: whichever storage is in.
+    var recorder: String?
+
+    init(host: String = "", streams: [Int]? = nil, recorder: String? = nil) { self.host = host; self.streams = streams; self.recorder = recorder }
+
+    private enum Keys: String, CodingKey { case host, streams, recorder }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        host = try c.decodeIfPresent(String.self, forKey: .host) ?? ""
+        streams = try c.decodeIfPresent([Int].self, forKey: .streams)
+        recorder = try c.decodeIfPresent(String.self, forKey: .recorder)
+    }
+}
+
 struct ScreenOutput: Codable, Hashable, Identifiable {
     var name: String
     var aux: [Int]
@@ -163,10 +184,13 @@ struct CueConfig: Codable, Equatable {
     /// Changes to the follow-shot framing, by size: "shoulders", "waist", "full".
     var framing: [String: FramingRule] = [:]
     var trackTuning = TrackTuning()
+    /// A Zowietek encoder that does the streaming and recording. When set, the top bar's
+    /// Stream and Record buttons run it instead of the switcher.
+    var zowietek = ZowietekSetup()
 
     init() {}
 
-    private enum Keys: String, CodingKey { case atemHost, me, sources, cameras, keys, trackSpeed, ptzSpeed, trackTilt, trackZoom, mixNames, pictures, screens, routes, framing, trackTuning }
+    private enum Keys: String, CodingKey { case atemHost, me, sources, cameras, keys, trackSpeed, ptzSpeed, trackTilt, trackZoom, mixNames, pictures, screens, routes, framing, trackTuning, zowietek }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -185,6 +209,7 @@ struct CueConfig: Codable, Equatable {
         routes = try c.decodeIfPresent([RouteButton].self, forKey: .routes) ?? []
         framing = try c.decodeIfPresent([String: FramingRule].self, forKey: .framing) ?? [:]
         trackTuning = try c.decodeIfPresent(TrackTuning.self, forKey: .trackTuning) ?? TrackTuning()
+        zowietek = try c.decodeIfPresent(ZowietekSetup.self, forKey: .zowietek) ?? ZowietekSetup()
     }
 }
 
@@ -317,6 +342,7 @@ final class ConfigStore: ObservableObject {
         b.ptz.manualSpeed = config.ptzSpeed
         let me = max(0, config.me - 1)
         if b.me != me { b.me = me }
+        ZowietekLink.shared.apply(config.zowietek)
         guard !readOnly else { return }
         if b.atem.host != config.atemHost { b.atem.connect(config.atemHost) }
         if b.ptz.cameras != config.cameras { b.ptz.cameras = config.cameras }

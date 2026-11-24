@@ -48,6 +48,7 @@ struct TopBar: View {
     @EnvironmentObject var booth: Booth
     @EnvironmentObject var atem: ATEMClient
     @EnvironmentObject var ptz: PTZController
+    @ObservedObject var zowie = ZowietekLink.shared
 
     var body: some View {
         HStack(spacing: T.s3) {
@@ -68,15 +69,19 @@ struct TopBar: View {
             }
             Spacer(minLength: T.s2)
             TopMonitors()
-            if atem.state.hasRecording {
-                StatusButton(title: atem.state.recording ? "Recording" : "Record", on: atem.state.recording, color: T.program) {
-                    atem.setRecording(!atem.state.recording)
+            if zowie.active && !atem.simulated {
+                ZowietekButtons()
+            } else {
+                if atem.state.hasRecording {
+                    StatusButton(title: atem.state.recording ? "Recording" : "Record", on: atem.state.recording, color: T.program) {
+                        atem.setRecording(!atem.state.recording)
+                    }
                 }
+                if atem.state.hasStreaming { StatusButton(title: atem.state.streaming ? "Streaming" : (atem.state.streamConnecting ? "Connecting" : "Stream"),
+                             on: atem.state.streaming || atem.state.streamConnecting, color: atem.state.streaming ? T.program : T.warning) {
+                    atem.setStreaming(!(atem.state.streaming || atem.state.streamConnecting))
+                } }
             }
-            if atem.state.hasStreaming { StatusButton(title: atem.state.streaming ? "Streaming" : (atem.state.streamConnecting ? "Connecting" : "Stream"),
-                         on: atem.state.streaming || atem.state.streamConnecting, color: atem.state.streaming ? T.program : T.warning) {
-                atem.setStreaming(!(atem.state.streaming || atem.state.streamConnecting))
-            } }
         }
         .padding(.horizontal, T.s3)
         .frame(height: TopBar.height)
@@ -168,6 +173,61 @@ struct TopMonitors: View {
     }
 }
 
+/// Record and Stream when a Zowietek does them. Starting is at once; stopping asks first,
+/// so a stray click can't end the livestream or the recording.
+struct ZowietekButtons: View {
+    @ObservedObject var zowie = ZowietekLink.shared
+    @State private var stopping: Kind?
+    @State private var problem: String?
+
+    enum Kind: String, Identifiable { case stream, record; var id: String { rawValue } }
+
+    var body: some View {
+        HStack(spacing: T.s3) {
+            if zowie.state == nil {
+                Text(zowie.problem == nil ? "Zowietek…" : "Zowietek not answering").font(.sans(12, .semibold))
+                    .foregroundStyle(zowie.problem == nil ? T.inkSubtle : T.warning).lineLimit(1)
+                    .help(zowie.problem ?? "Reaching the Zowietek set up in Setup.")
+            }
+            StatusButton(title: zowie.recording ? "Recording" : "Record", on: zowie.recording, color: T.program) {
+                if zowie.recording { stopping = .record } else { zowie.setRecording(true) { problem = $0 } }
+            }
+            .help(recordHelp)
+            let look = zowie.streamLook
+            StatusButton(title: look == .live ? "Streaming" : look == .connecting ? "Connecting" : look == .failed ? "Stream failed" : "Stream",
+                         on: look != .off, color: look == .live ? T.program : (look == .failed ? T.danger : T.warning)) {
+                if zowie.streaming { stopping = .stream } else { zowie.setStreaming(true) { problem = $0 } }
+            }
+            .help(streamHelp)
+        }
+        .opacity(zowie.busy ? 0.6 : 1)
+        .disabled(zowie.busy)
+        .confirmationDialog(stopping == .stream ? "Stop the stream?" : "Stop recording?",
+                            isPresented: Binding(get: { stopping != nil }, set: { if !$0 { stopping = nil } })) {
+            Button(stopping == .stream ? "Stop streaming" : "Stop recording", role: .destructive) {
+                if stopping == .stream { zowie.setStreaming(false) { problem = $0 } } else { zowie.setRecording(false) { problem = $0 } }
+                stopping = nil
+            }
+        } message: {
+            Text(stopping == .stream ? "Everyone watching online will lose the picture." : "The recording so far is kept.")
+        }
+        .alert(problem ?? "", isPresented: Binding(get: { problem != nil }, set: { if !$0 { problem = nil } })) {
+            Button("OK", role: .cancel) {}
+        }
+    }
+
+    var streamHelp: String {
+        guard let st = zowie.state else { return "Streaming on the Zowietek" }
+        let names = zowie.chosenStreams(st).map(\.name)
+        return names.isEmpty ? "The Zowietek has no streams saved. Add one on its own web page." : "Streams to \(names.joined(separator: ", ")) on the Zowietek"
+    }
+
+    var recordHelp: String {
+        guard let st = zowie.state, let r = zowie.recorder(st) else { return "Recording on the Zowietek (no storage found yet)" }
+        return "Records to \(r.name) on the Zowietek" + (r.freeMB.map { ", \($0 / 1024) GB free" } ?? "")
+    }
+}
+
 struct StatusButton: View {
     let title: String
     let on: Bool
@@ -179,6 +239,8 @@ struct StatusButton: View {
                 Circle().fill(on ? color : T.lineStrong).frame(width: 8, height: 8)
                 LabelText(title, size: 11)
             }
+            // Never cut short ("RECO…"): the bar makes room elsewhere.
+            .fixedSize()
             .padding(.horizontal, 10).frame(height: 28)
             .background(RoundedRectangle(cornerRadius: T.rSM).fill(on ? color.opacity(0.18) : Color.clear))
             .overlay(RoundedRectangle(cornerRadius: T.rSM).stroke(on ? color.opacity(0.6) : T.lineStrong))
