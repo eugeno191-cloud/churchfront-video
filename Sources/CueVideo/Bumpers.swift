@@ -113,6 +113,9 @@ final class BumperPlayer: ObservableObject {
         setup.host.isEmpty ? nil : FreeShowClient(host: setup.host, port: setup.port, session: session, password: password)
     }
 
+    /// How long FreeShow gets to start a video before the bumper gives up (the switcher untouched).
+    static let startWait = 15.0
+
     /// How long the switcher's fade takes, in seconds (its mix rate, at 30 frames a second).
     var fadeSeconds: Double { Double(booth.atem.state.mixRate[booth.me] ?? 30) / 30 }
 
@@ -131,9 +134,10 @@ final class BumperPlayer: ObservableObject {
             func tell(_ why: String?) { if !told { told = true; started?(why) } }
             do {
                 try await client.play(b.path)
-                // Wait for the video to be running before anything goes to air (up to 5 s).
+                // Wait for the video to be running before anything goes to air. A long file
+                // can take FreeShow several seconds to load (a 5-minute one took about 4).
                 var left = 0.0
-                for _ in 0..<25 {
+                for _ in 0..<Int(Self.startWait / 0.2) {
                     left = try await client.timeLeft()
                     if left > 0 || r != self.run { break }
                     try await Task.sleep(nanoseconds: 200_000_000)

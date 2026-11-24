@@ -108,11 +108,15 @@ final class BumperTests: XCTestCase {
         let p = player()
         var started: String?? = .none
         p.play(welcome) { started = .some($0) }
-        wait(8) { started != nil }
+        wait(BumperPlayer.startWait + 3) { started != nil }
         XCTAssertEqual(started, .some(FreeShowError.didNotStart.description))
         XCTAssertEqual(booth.atem.state.program[0], 1)
         XCTAssertEqual(booth.atem.state.preview[0], 2)
         XCTAssertEqual(p.phase, .idle)
+    }
+
+    func testFreeShowGetsFifteenSecondsToStartAVideo() {
+        XCTAssertEqual(BumperPlayer.startWait, 15)
     }
 
     func testStopEndsItEarly() {
