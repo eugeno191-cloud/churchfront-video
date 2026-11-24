@@ -272,21 +272,29 @@ struct SourceTile: View {
     }
 }
 
-/// Step 2: frame the camera that's on Next.
+/// Step 2: frame the camera that's on Next. When Next isn't a camera, the camera that's on
+/// Live: pan, tilt, zoom and focus then adjust it on air, marked so every move is seen to be live.
 struct FramePanel: View {
     @EnvironmentObject var booth: Booth
     @EnvironmentObject var atem: ATEMClient
     @EnvironmentObject var ptz: PTZController
     @EnvironmentObject var store: ConfigStore
 
-    /// The camera on Next, if Next is a camera.
-    var target: PTZCamera? {
-        guard let i = atem.state.preview[booth.me] else { return nil }
-        return ptz.cameras.first { $0.atemInput == i && !$0.host.isEmpty }
-    }
+    var target: PTZCamera? { booth.cameraToFrame }
+    /// The camera being framed is on Live: everyone watching sees it move.
+    var onAir: Bool { booth.framingOnAir }
 
     var body: some View {
         VStack(alignment: .leading, spacing: T.s3) {
+            if let t = target, onAir {
+                HStack(spacing: 6) {
+                    Text("ON AIR").font(.sans(10, .bold)).tracking(1).foregroundStyle(T.onAction)
+                        .padding(.horizontal, 6).frame(height: 18)
+                        .background(RoundedRectangle(cornerRadius: T.rSM).fill(T.program))
+                    Text("Moving \(t.name) is seen live. Go slow.").font(.sans(11, .semibold)).foregroundStyle(T.program)
+                }
+                .help("Nothing on Next is a camera, so the joystick, zoom and arrow keys adjust \(t.name) on Live. Put a camera on Next to frame that one instead.")
+            }
             HStack(alignment: .center, spacing: T.s4) {
                 Joystick { x, y in ptz.drive(x: x, y: y) } onEnd: { ptz.stopDrive() }
                     .frame(width: 170, height: 170)
@@ -308,7 +316,7 @@ struct FramePanel: View {
             CameraSpeedDial()
             .overlay {
                 if target == nil {
-                    Text("Put a camera on Next to frame it")
+                    Text("Put a camera on Next or Live to frame it")
                         .font(.sans(13, .semibold)).foregroundStyle(T.ink)
                         .padding(.horizontal, T.s3).padding(.vertical, T.s2)
                         .background(RoundedRectangle(cornerRadius: T.rMD).fill(T.surfaceRaised))

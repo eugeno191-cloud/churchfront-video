@@ -30,11 +30,22 @@ final class Booth: ObservableObject {
     /// Opens a page of the Engineer view.
     func show(_ s: EngineerSection) { section = s; view = .engineer }
 
-    /// The camera on Next, which the camera controls and the Camera menu act on.
+    /// The camera on Next, which saved shots, exposure and the Camera menu act on.
     var cameraOnNext: PTZCamera? {
         let next = atem.state.preview[me]
         return ptz.cameras.first { $0.atemInput == next && !$0.host.isEmpty }
     }
+
+    /// The camera the joystick, zoom, focus and arrow keys move: the one on Next, or when
+    /// Next isn't a camera, the one on Live, adjusted on air.
+    var cameraToFrame: PTZCamera? {
+        if let c = cameraOnNext { return c }
+        let live = atem.state.program[me]
+        return ptz.cameras.first { $0.atemInput == live && !$0.host.isEmpty }
+    }
+
+    /// The camera being framed is the one on Live.
+    var framingOnAir: Bool { cameraOnNext == nil && cameraToFrame != nil }
     private var heldArrows: Set<UInt16> = []
     /// The title of the volunteer's window (the WindowGroup in CueVideoApp).
     static let mainWindowTitle = "Churchfront Video"
@@ -105,9 +116,9 @@ final class Booth: ObservableObject {
         if e.modifierFlags.contains(.command) { return false }
         let arrows: [UInt16: (Double, Double)] = [123: (-0.6, 0), 124: (0.6, 0), 125: (0, -0.6), 126: (0, 0.6)]
         if let a = arrows[e.keyCode] {
-            // Only the camera on Next moves, as with the joystick.
-            let next = atem.state.preview[me]
-            guard ptz.cameras.contains(where: { $0.atemInput == next && $0.id == ptz.selected }) else {
+            // Only the camera being framed moves, as with the joystick: the one on Next, or the
+            // one on Live when Next isn't a camera.
+            guard let framing = cameraToFrame, framing.id == ptz.selected else {
                 heldArrows.removeAll(); ptz.stopDrive(); return true
             }
             if down { heldArrows.insert(e.keyCode) } else { heldArrows.remove(e.keyCode) }
