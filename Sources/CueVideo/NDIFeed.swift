@@ -1,5 +1,6 @@
 import SwiftUI
 import CoreGraphics
+import CoreImage
 import NDIBridge
 
 /// A small live picture from an NDI source, such as CueScreens' graphics or its lower thirds.
@@ -166,18 +167,23 @@ final class NDIFeedHub {
 struct NDIVideo: View {
     let source: String
     var overlay = false
+    /// For a key picture without alpha: the background color to take out ("green", "blue"
+    /// or "black"), as the switcher's chroma or luma key does.
+    var remove: String?
     @ObservedObject private var feed: NDIFeed
 
-    init(source: String, overlay: Bool = false) {
+    init(source: String, overlay: Bool = false, remove: String? = nil) {
         self.source = source
         self.overlay = overlay
+        self.remove = remove
         feed = NDIFeedHub.shared.feed(source)
     }
 
     var body: some View {
         ZStack {
             if !overlay { Color.black }
-            if let img = feed.image, !overlay || feed.live {
+            if let raw = feed.image, !overlay || feed.live,
+               let img = (remove.flatMap { KeyRemoval.apply(raw, $0) } ?? raw) as CGImage? {
                 Image(decorative: img, scale: 1).resizable().aspectRatio(contentMode: .fit)
             }
             if !overlay, !feed.live {
@@ -193,5 +199,52 @@ struct NDIVideo: View {
         .allowsHitTesting(false)
         .onAppear { NDIFeedHub.shared.retain(source) }
         .onDisappear { NDIFeedHub.shared.release(source) }
+    }
+}
+
+/// Takes a key picture's background out, for previews of keys whose picture has no alpha:
+/// FreeShow's lower thirds on green, say. Green and blue work like a chroma key (and pull the
+/// green or blue fringe off the edges); black works like a luma key.
+enum KeyRemoval {
+    static let choices = ["green", "blue", "black"]
+    private static let context = CIContext(options: [.cacheIntermediates: false])
+    private static var cubes: [String: Data] = [:]
+    private static let size = 32
+
+    static func apply(_ img: CGImage, _ color: String) -> CGImage? {
+        guard choices.contains(color), let f = CIFilter(name: "CIColorCube") else { return nil }
+        f.setValue(size, forKey: "inputCubeDimension")
+        f.setValue(cube(color), forKey: "inputCubeData")
+        f.setValue(CIImage(cgImage: img), forKey: kCIInputImageKey)
+        guard let out = f.outputImage else { return nil }
+        return context.createCGImage(out, from: out.extent, format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+    }
+
+    /// How much of a color stays (0 gone, 1 kept), and the color with any green or blue spill pulled back.
+    static func keep(_ r: Float, _ g: Float, _ b: Float, _ color: String) -> (Float, Float, Float, Float) {
+        switch color {
+        case "black":
+            let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+            return (r, g, b, min(1, max(0, (luma - 0.06) / 0.1)))
+        case "blue":
+            let over = b - max(r, g)
+            return (r, g, min(b, max(r, g)), min(1, max(0, 1 - (over - 0.12) / 0.18)))
+        default:
+            let over = g - max(r, b)
+            return (r, min(g, max(r, b)), b, min(1, max(0, 1 - (over - 0.12) / 0.18)))
+        }
+    }
+
+    private static func cube(_ color: String) -> Data {
+        if let c = cubes[color] { return c }
+        var values = [Float](); values.reserveCapacity(size * size * size * 4)
+        let n = Float(size - 1)
+        for bi in 0..<size { for gi in 0..<size { for ri in 0..<size {
+            let (r, g, b, a) = keep(Float(ri) / n, Float(gi) / n, Float(bi) / n, color)
+            values += [r * a, g * a, b * a, a]   // premultiplied, as Core Image wants
+        } } }
+        let data = values.withUnsafeBufferPointer { Data(buffer: $0) }
+        cubes[color] = data
+        return data
     }
 }

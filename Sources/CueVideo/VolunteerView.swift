@@ -81,6 +81,7 @@ struct BusMonitor: View {
     @EnvironmentObject var ptz: PTZController
     @EnvironmentObject var store: ConfigStore
     @ObservedObject var tracker = AutoTracker.shared
+    @ObservedObject var pretend = PretendCameras.shared
 
     /// Held over Live for a moment after a fade ends, if the switcher reports the fade
     /// finished before it reports the new Live source, so the old shot can't flash back.
@@ -102,9 +103,12 @@ struct BusMonitor: View {
         return Incoming(input: s.preview[me], amount: min(1, max(0, s.position[me] ?? 0)), dip: s.style[me] == 1)
     }
 
-    /// A source's picture: the camera's own preview, its NDI picture, or its name.
+    /// A source's picture: the camera's own preview, its NDI picture, or its name. In offline
+    /// mode, a camera input with no real video shows a pretend camera.
     @ViewBuilder func picture(_ input: Int?, pick: Bool) -> some View {
-        if let camera = camera(on: input) {
+        if pretend.shows(input), let i = input {
+            PretendCameraView(input: i, close: PretendCameras.isClose(i))
+        } else if let camera = camera(on: input) {
             CameraVideo(camera: camera, onPick: pick ? self.pick(camera) : nil).id(camera.id)
         } else if let n = store.ndi(input) {
             NDIVideo(source: n).id(n)
@@ -115,7 +119,10 @@ struct BusMonitor: View {
         }
     }
 
-    var keyOverlays: [String] {
+    /// Key pictures to lay over the shot: the NDI source, and the background to take out of it.
+    struct KeyPicture: Hashable { let ndi: String; let remove: String? }
+
+    var keyOverlays: [KeyPicture] {
         let s = atem.state
         let keys = store.config.keys.filter { k in
             guard let n = k.ndi, !n.isEmpty, n != store.ndi(input) else { return false }
@@ -123,7 +130,7 @@ struct BusMonitor: View {
             return title == "Live" ? k.isOn(s) : k.onNext(s)
         }
         var seen = Set<String>()
-        return keys.compactMap(\.ndi).filter { seen.insert($0).inserted }
+        return keys.compactMap { k in k.ndi.map { KeyPicture(ndi: $0, remove: k.remove) } }.filter { seen.insert($0.ndi).inserted }
     }
 
     /// Clicking a person on Next follows them. On Live, a click only switches who an
@@ -153,7 +160,9 @@ struct BusMonitor: View {
             }
             // Lower thirds and other keys with an NDI picture, laid over the shot when the
             // key is on it: on Live when it's on air, on Next when it will be after the take.
-            ForEach(keyOverlays, id: \.self) { n in NDIVideo(source: n, overlay: true).id("key-" + n) }
+            ForEach(keyOverlays, id: \.self) { k in
+                NDIVideo(source: k.ndi, overlay: true, remove: k.remove).id("key-" + k.ndi + (k.remove ?? ""))
+            }
         }
         // Video is shown square-cornered, the shape of the picture itself.
         .clipShape(Rectangle())
@@ -177,7 +186,7 @@ struct BusMonitor: View {
             }
         }
         .overlay(alignment: .bottomLeading) {
-            if camera != nil || store.ndi(input) != nil {
+            if camera != nil || store.ndi(input) != nil || pretend.shows(input) {
                 Text(store.label(input, atem.state)).font(.sans(15, .semibold)).foregroundStyle(.white)
                     .padding(.horizontal, 10).frame(height: 28)
                     .background(Capsule().fill(Color.black.opacity(0.6)))
@@ -228,6 +237,7 @@ struct SourceTile: View {
     @EnvironmentObject var ptz: PTZController
     @EnvironmentObject var store: ConfigStore
 
+    @ObservedObject var pretend = PretendCameras.shared
     var camera: PTZCamera? { ptz.pictured(on: source.input, store) }
     var isLive: Bool { atem.state.program[booth.me] == source.input }
     var isNext: Bool { atem.state.preview[booth.me] == source.input }
@@ -235,7 +245,9 @@ struct SourceTile: View {
     var body: some View {
         Button { atem.setPreview(source.input, me: booth.me) } label: {
             ZStack(alignment: .bottomLeading) {
-                if let camera {
+                if pretend.shows(source.input) {
+                    PretendCameraView(input: source.input, close: PretendCameras.isClose(source.input), tag: false)
+                } else if let camera {
                     CameraVideo(camera: camera).id(camera.id)
                 } else if let n = source.ndi, !n.isEmpty {
                     NDIVideo(source: n).id(n)
@@ -251,7 +263,7 @@ struct SourceTile: View {
                 }
                 .foregroundStyle(.white)
                 .padding(.horizontal, 8).frame(height: 26)
-                .background(Capsule().fill(Color.black.opacity(camera == nil && (source.ndi ?? "").isEmpty ? 0 : 0.6)))
+                .background(Capsule().fill(Color.black.opacity(camera == nil && (source.ndi ?? "").isEmpty && !pretend.shows(source.input) ? 0 : 0.6)))
                 .padding(6)
             }
             .frame(maxWidth: 220, maxHeight: .infinity)

@@ -23,6 +23,10 @@ struct KeyButton: Codable, Hashable, Identifiable {
     /// An NDI source with alpha showing this key (such as CueScreens' lower thirds), laid
     /// over the Next and Live pictures when the key is on them.
     var ndi: String? = nil
+    /// When that picture has no alpha, the background to take out of it for the preview:
+    /// "green" or "blue" (a chroma key, such as FreeShow lower thirds on green) or "black"
+    /// (a luma key). Missing: the picture's own alpha is used.
+    var remove: String? = nil
     var id: String { "\(label)|\(me ?? 0)|\(keyer ?? 0)|\(dsk ?? 0)" }
 
     func isOn(_ s: ATEMState) -> Bool {

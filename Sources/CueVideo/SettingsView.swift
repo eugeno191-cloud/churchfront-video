@@ -202,8 +202,19 @@ struct SetupTab: View {
                     NDIPicker(selection: k.ndi, none: "No preview") { v in store.update { c in
                         if let i = c.keys.firstIndex(of: k) { c.keys[i].ndi = v }
                     } }
-                    .frame(width: 280)
-                    .help("An NDI source with alpha showing this key, such as Churchfront Screens' lower thirds sent to NDI with alpha. It's laid over the Next and Live pictures when the key is on them.")
+                    .frame(width: 240)
+                    .help("An NDI source showing this key, such as Churchfront Screens' lower thirds sent to NDI with alpha, or FreeShow's NDI. It's laid over the Next and Live pictures when the key is on them.")
+                    Picker("", selection: Binding(get: { k.remove ?? "" }, set: { v in store.update { c in
+                        if let i = c.keys.firstIndex(of: k) { c.keys[i].remove = v.isEmpty ? nil : v }
+                    } })) {
+                        Text("Keep its alpha").tag("")
+                        Text("Remove green").tag("green")
+                        Text("Remove blue").tag("blue")
+                        Text("Remove black").tag("black")
+                    }
+                    .labelsHidden().pickerStyle(.menu).frame(width: 140)
+                    .disabled((k.ndi ?? "").isEmpty)
+                    .help("For a preview picture without alpha, the background to take out, as the switcher's key does: green or blue for a chroma key (FreeShow lower thirds on green), black for a luma key.")
                     Spacer(minLength: 0)
                     IconButton(icon: "trash", help: "Remove this button") { store.update { $0.keys.removeAll { $0 == k } } }
                 }
