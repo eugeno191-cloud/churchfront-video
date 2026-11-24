@@ -64,6 +64,8 @@ final class Booth: ObservableObject {
     static func offlineState(_ c: CueConfig) -> ATEMState {
         var s = ATEMState()
         s.product = "Offline mode"
+        // Stream and Record show in the top bar, as they do on a switcher that has them.
+        s.hasStreaming = true; s.hasRecording = true
         func add(_ id: Int, _ name: String) { s.inputs[id] = ATEMInput(id: id, long: name, short: String(name.prefix(4)).uppercased()) }
         add(0, "Black")
         add(1000, "Color Bars")

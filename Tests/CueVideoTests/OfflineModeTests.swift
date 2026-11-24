@@ -23,6 +23,19 @@ final class OfflineModeTests: XCTestCase {
         XCTAssertEqual(s.auxCount, 1)
     }
 
+    func testStreamAndRecordShowAndToggle() {
+        var s = Booth.offlineState(config())
+        XCTAssertTrue(s.hasStreaming)
+        XCTAssertTrue(s.hasRecording)
+        XCTAssertFalse(s.streaming)
+        ATEMClient.simulate("StrR", [1, 0, 0, 0], &s)
+        ATEMClient.simulate("RcTM", [1, 0, 0, 0], &s)
+        XCTAssertTrue(s.streaming)
+        XCTAssertTrue(s.recording)
+        ATEMClient.simulate("StrR", [0, 0, 0, 0], &s)
+        XCTAssertFalse(s.streaming)
+    }
+
     func testCutSwapsLiveAndNext() {
         var s = Booth.offlineState(config())
         ATEMClient.retally(&s)
