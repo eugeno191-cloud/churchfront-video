@@ -45,7 +45,7 @@ enum SetupPage: String, CaseIterable, Identifiable {
         switch self {
         case .switcher: return "Where the ATEM is, and which mix the operator runs."
         case .sources: return "The tiles the operator can put on Next, left to right."
-        case .keys: return "On and off buttons under Fade and Cut, such as lower thirds."
+        case .keys: return "On and off buttons under Fade and Cut, such as lower thirds, and FreeShow bumper videos."
         case .cameras: return "The PTZ cameras, the switcher input each one feeds, and their saved shots."
         case .tracking: return "How auto tracking follows a person."
         case .assistant: return "Let Claude set up and run Churchfront Video for you, in plain words."
@@ -82,7 +82,7 @@ struct SetupTab: View {
             switch page {
             case .switcher: switcher; ZowietekCard()
             case .sources: sources
-            case .keys: keyButtons
+            case .keys: keyButtons; FreeShowCard()
             case .cameras: cameras
             case .tracking: tracking
             case .assistant: AssistantSetup()
@@ -422,6 +422,106 @@ struct ZowietekCard: View {
             var set = Set(c.zowietek.streams ?? all)
             if on { set.insert(index) } else { set.remove(index) }
             c.zowietek.streams = set.isSuperset(of: all) ? nil : all.filter(set.contains)
+        }
+    }
+}
+
+/// FreeShow and its bumper videos: the buttons under Fade and Cut that play one and fade to it.
+struct FreeShowCard: View {
+    @EnvironmentObject var store: ConfigStore
+    @State private var host = Booth.shared.store.config.freeshow.host
+    @State private var port = String(Booth.shared.store.config.freeshow.port)
+    @State private var password = ""
+    @State private var saved = SavedLogin.freeshow.isSaved
+    @State private var note: String?
+    @State private var newName = ""
+    @State private var newPath = ""
+    @State private var testing: String?
+
+    var body: some View {
+        let fs = store.config.freeshow
+        Card(title: "FreeShow bumpers",
+             help: "Bumper buttons under Fade and Cut play a video in FreeShow, fade the switcher to FreeShow's input once it's running, and fade back to what was Live when it ends. Turn on FreeShow's API in FreeShow: Settings > Connections. The video files must be on the FreeShow computer; type their path there. If FreeShow has an API password, save it here (kept in this Mac's Keychain).") {
+            row("FreeShow at") {
+                TextField("IP address of the FreeShow computer", text: $host).textFieldStyle(CueFieldStyle()).frame(width: 220)
+                    .onSubmit(saveAddress)
+                TextField("5506", text: $port).textFieldStyle(CueFieldStyle()).frame(width: 64).onSubmit(saveAddress)
+                Button(fs.host.isEmpty ? "Connect" : "Save") { saveAddress() }.buttonStyle(CueButton(kind: .primary))
+                Button("Test") { test() }.buttonStyle(CueButton())
+                if let testing { Text(testing).font(.sans(12)).foregroundStyle(T.inkMuted).fixedSize(horizontal: false, vertical: true) }
+            }
+            row("Plays on input") {
+                Stepper(value: Binding(get: { fs.input }, set: { v in store.update { $0.freeshow.input = max(1, v) } }), in: 1...9999) {
+                    Text("\(fs.input): \(store.label(fs.input, Booth.shared.atem.state))").font(.sans(13))
+                }
+                Text("The switcher input FreeShow's output feeds.").font(.sans(12)).foregroundStyle(T.inkSubtle)
+            }
+            row("API password") {
+                SecureField(saved ? "Saved (type to replace)" : "Only if set in FreeShow", text: $password).textFieldStyle(CueFieldStyle()).frame(width: 200)
+                Button("Save") {
+                    guard !password.isEmpty else { note = "Type the password first."; return }
+                    if SavedLogin.freeshow.save(user: "api", password: password) { password = ""; saved = true; note = "Saved in the Keychain." }
+                    else { note = "The Keychain didn't accept it. Try again." }
+                }
+                .buttonStyle(CueButton())
+                if saved {
+                    Button("Remove") { SavedLogin.freeshow.clear(); saved = false; note = "Removed." }.buttonStyle(CueButton(kind: .danger))
+                }
+                if let note { Text(note).font(.sans(12)).foregroundStyle(T.inkMuted) }
+            }
+            row("Bumpers") {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(fs.bumpers.enumerated()), id: \.element.id) { i, b in
+                        HStack(spacing: T.s2) {
+                            Text(b.name).font(.sans(13, .semibold)).frame(width: 140, alignment: .leading).lineLimit(1)
+                            Text(b.path).font(.system(size: 11, design: .monospaced)).foregroundStyle(T.inkMuted).lineLimit(1).truncationMode(.middle)
+                                .frame(maxWidth: 320, alignment: .leading)
+                            Button { store.update { $0.freeshow.bumpers.remove(at: i) } } label: { Image(systemName: "trash") }
+                                .buttonStyle(.borderless).foregroundStyle(T.danger).help("Remove \(b.name)")
+                        }
+                    }
+                    HStack(spacing: T.s2) {
+                        TextField("Name, such as Welcome", text: $newName).textFieldStyle(CueFieldStyle()).frame(width: 140)
+                        TextField("Path on the FreeShow computer, such as C:\\Videos\\welcome.mp4", text: $newPath).textFieldStyle(CueFieldStyle()).frame(width: 320)
+                            .onSubmit(add)
+                        Button("Add") { add() }.buttonStyle(CueButton())
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: 760, alignment: .leading)
+    }
+
+    private func row<C: View>(_ label: String, @ViewBuilder _ content: () -> C) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: T.s3) {
+            Text(label).font(.sans(12, .semibold)).foregroundStyle(T.inkMuted).frame(width: 130, alignment: .leading)
+            content()
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func saveAddress() {
+        let h = host.trimmingCharacters(in: .whitespaces)
+        let p = Int(port.trimmingCharacters(in: .whitespaces)) ?? 5506
+        port = String(p)
+        store.update { $0.freeshow.host = h; $0.freeshow.port = p }
+    }
+
+    private func add() {
+        let n = newName.trimmingCharacters(in: .whitespaces), p = newPath.trimmingCharacters(in: .whitespaces)
+        guard !n.isEmpty, !p.isEmpty else { return }
+        store.update { $0.freeshow.bumpers.append(Bumper(name: n, path: p)) }
+        newName = ""; newPath = ""
+    }
+
+    /// Asks FreeShow something harmless, to show whether it answers.
+    private func test() {
+        saveAddress()
+        guard let c = BumperPlayer.shared.client else { testing = "Add the address first."; return }
+        testing = "Asking FreeShow…"
+        Task { @MainActor in
+            do { _ = try await c.send("get_cleared"); testing = "FreeShow answered." }
+            catch { testing = (error as? FreeShowError)?.description ?? "\(error)" }
         }
     }
 }

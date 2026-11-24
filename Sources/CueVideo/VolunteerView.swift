@@ -641,6 +641,7 @@ struct TakePanel: View {
     @EnvironmentObject var booth: Booth
     @EnvironmentObject var atem: ATEMClient
     @EnvironmentObject var store: ConfigStore
+    @ObservedObject var bumpers = BumperPlayer.shared
 
     var body: some View {
         let me = booth.me
@@ -697,7 +698,44 @@ struct TakePanel: View {
                                 width: 121, height: 48, titleSize: 13) { k.toggle(atem) }
                         .help(on ? "Take \(k.label) off (\(k.target))" : "Put \(k.label) on (\(k.target))")
                 }
+                // Bumper videos in FreeShow: one press plays it and fades to it, and it fades
+                // back by itself at the end. Pressed again while it plays, it ends early.
+                if !store.config.freeshow.host.isEmpty {
+                    ForEach(store.config.freeshow.bumpers) { b in
+                        let mine = bumpers.current?.id == b.id
+                        PanelButton(title: b.name.uppercased(), subtitle: bumperSubtitle(mine),
+                                    lit: mine ? (bumpers.phase == .playing ? T.program : T.warning) : nil,
+                                    width: 121, height: 48, titleSize: 13) {
+                            if mine { bumpers.stop() } else { bumpers.play(b) }
+                        }
+                        .disabled(bumpers.phase != .idle && !mine)
+                        .opacity(bumpers.phase != .idle && !mine ? 0.45 : 1)
+                        .help(mine ? "End \(b.name) now and fade back" : "Play \(b.name) in FreeShow, fade to it, and fade back when it ends")
+                    }
+                }
             }
+            if let p = bumpers.problem {
+                HStack(alignment: .top, spacing: 4) {
+                    Text(p).font(.sans(11, .semibold)).foregroundStyle(T.warning).fixedSize(horizontal: false, vertical: true)
+                    Button { bumpers.problem = nil } label: { Image(systemName: "xmark").font(.system(size: 9, weight: .bold)) }
+                        .buttonStyle(.plain).foregroundStyle(T.inkSubtle)
+                }
+                .frame(width: 250, alignment: .leading)
+            }
+        }
+    }
+}
+
+extension TakePanel {
+    /// What a bumper button says under its name: PLAY, STARTING, the time left, or ENDING.
+    func bumperSubtitle(_ mine: Bool) -> String {
+        guard mine else { return "PLAY" }
+        switch bumpers.phase {
+        case .starting: return "STARTING"
+        case .ending: return "ENDING"
+        default:
+            let t = Int((bumpers.timeLeft ?? 0).rounded(.up))
+            return String(format: "ON AIR %d:%02d", t / 60, t % 60)
         }
     }
 }

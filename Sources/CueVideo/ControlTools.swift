@@ -54,6 +54,9 @@ enum ControlTools {
         tool("set_key_button", "Turn one of the volunteer key buttons (such as Lower thirds) on or off. Leave out on to toggle.",
              ["button": str("The button's label, such as Lower thirds."), "on": bool("true to put it on air, false to take it off.")], required: ["button"]),
         tool("set_recording", "Start or stop recording: on the Zowietek encoder when one is set up in Setup (to the storage chosen there), otherwise on the switcher. Confirm with the person before stopping a recording.", ["on": bool("true to record.")], required: ["on"]),
+        tool("play_bumper", "Play a FreeShow bumper video (Setup > Key buttons > FreeShow bumpers): FreeShow plays it, the switcher fades to FreeShow's input once it runs, and fades back to what was Live when it ends. It goes on air, so confirm with the person first.",
+             ["bumper": str("The bumper's name, as on its button.")], required: ["bumper"]),
+        tool("stop_bumper", "End the bumper playing now: fade back to what was Live before it and clear the video in FreeShow."),
         tool("set_streaming", "Start or stop the livestream: the Zowietek encoder's chosen stream destinations when one is set up in Setup, otherwise the switcher's stream. It goes out to everyone watching online, so confirm with the person first.", ["on": bool("true to stream.")], required: ["on"]),
 
         // Cameras
@@ -191,6 +194,18 @@ enum ControlTools {
         case "set_recording" where ZowietekLink.shared.active && !atem.simulated:
             guard let on = a["on"] as? Bool else { throw fail("Give on as true (record) or false (stop). Nothing was changed.") }
             ZowietekLink.shared.setRecording(on) { why in done(why.map { ["error": $0] } ?? ok("Zowietek recording \(on ? "started" : "stopped")")) }
+        case "play_bumper":
+            let name = (a["bumper"] as? String ?? "").lowercased()
+            let fs = store.config.freeshow
+            guard !fs.host.isEmpty else { throw fail("FreeShow isn't set up. Add its address in Setup > Key buttons.") }
+            guard let b = fs.bumpers.first(where: { $0.name.lowercased() == name }) else {
+                throw fail("No bumper called that. Bumpers: \(fs.bumpers.map(\.name).joined(separator: ", ")).")
+            }
+            BumperPlayer.shared.play(b) { why in done(why.map { ["error": $0] } ?? ok("\(b.name) is playing and on air; it fades back by itself at the end")) }
+        case "stop_bumper":
+            let p = BumperPlayer.shared
+            guard p.phase == .starting || p.phase == .playing else { throw fail("No bumper is playing.") }
+            p.stop(); done(ok("Ending \(p.current?.name ?? "the bumper") and fading back"))
         case "set_streaming" where ZowietekLink.shared.active && !atem.simulated:
             guard let on = a["on"] as? Bool else { throw fail("Give on as true (stream) or false (stop). Nothing was changed.") }
             ZowietekLink.shared.setStreaming(on) { why in done(why.map { ["error": $0] } ?? ok("Zowietek streaming \(on ? "started" : "stopped")")) }
@@ -665,6 +680,18 @@ enum ControlTools {
         return ["mixes": mixes, "outputs": outs, "buttons": buttons]
     }
 
+    /// FreeShow's bumpers, when FreeShow is set up.
+    static func bumperStatus() -> Any {
+        let fs = store.config.freeshow, p = BumperPlayer.shared
+        guard !fs.host.isEmpty else { return NSNull() }
+        var d: [String: Any] = ["freeshow": "\(fs.host):\(fs.port)", "plays_on_input": fs.input,
+                                "bumpers": fs.bumpers.map(\.name), "phase": "\(p.phase)"]
+        if let c = p.current { d["playing"] = c.name }
+        if let t = p.timeLeft { d["seconds_left"] = t }
+        if let why = p.problem { d["problem"] = why }
+        return d
+    }
+
     /// The Zowietek encoder, when one is set up: what Stream and Record run then.
     static func zowietekStatus() -> Any {
         let z = ZowietekLink.shared
@@ -750,6 +777,7 @@ enum ControlTools {
                 "sources": s.busSources.map { ["input": $0.id, "short": $0.short, "long": $0.long] },
             ] as [String: Any],
             "zowietek": zowietekStatus(),
+            "bumpers": bumperStatus(),
             "volunteer": [
                 "sources": store.volunteerSources(s).map { ["input": $0.input, "label": store.label($0.input, s)] },
                 "key_buttons": store.config.keys.map { ["label": $0.label, "target": $0.target, "on_air": $0.isOn(s)] },

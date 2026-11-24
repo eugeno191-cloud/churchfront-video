@@ -13,6 +13,8 @@ public struct SavedLogin {
     public static let camera = SavedLogin(service: "CueVideo camera admin login", account: "canon", userKey: "cameraLoginUser")
     /// The Zowietek encoder's login, for starting and stopping its streams and recordings.
     public static let zowietek = SavedLogin(service: "CueVideo Zowietek login", account: "zowietek", userKey: "zowietekLoginUser")
+    /// FreeShow's API password, if one is set in FreeShow (the user name is unused).
+    public static let freeshow = SavedLogin(service: "CueVideo FreeShow API password", account: "freeshow", userKey: "freeshowLoginUser")
 
     public struct Credential: Equatable { public let user: String; public let password: String
         public init(user: String, password: String) { self.user = user; self.password = password } }

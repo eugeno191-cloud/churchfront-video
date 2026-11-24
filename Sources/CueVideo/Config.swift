@@ -75,6 +75,50 @@ struct ZowietekSetup: Codable, Equatable {
     }
 }
 
+/// FreeShow and its bumper videos: { "host": "192.168.0.60", "input": 3,
+///   "bumpers": [ { "name": "Welcome", "path": "C:\\Videos\\welcome.mp4" } ] }.
+/// A bumper button plays the video in FreeShow, fades to its input, and fades back when it ends.
+struct FreeShowSetup: Codable, Equatable {
+    /// The FreeShow computer's IP address. Empty: no bumper buttons.
+    var host = ""
+    /// FreeShow's REST port (Settings > Connections). 5506 unless changed there.
+    var port = 5506
+    /// The switcher input FreeShow's output feeds.
+    var input = 3
+    var bumpers: [Bumper] = []
+
+    init(host: String = "", port: Int = 5506, input: Int = 3, bumpers: [Bumper] = []) {
+        self.host = host; self.port = port; self.input = input; self.bumpers = bumpers
+    }
+
+    private enum Keys: String, CodingKey { case host, port, input, bumpers }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        host = try c.decodeIfPresent(String.self, forKey: .host) ?? ""
+        port = try c.decodeIfPresent(Int.self, forKey: .port) ?? 5506
+        input = try c.decodeIfPresent(Int.self, forKey: .input) ?? 3
+        bumpers = try c.decodeIfPresent([Bumper].self, forKey: .bumpers) ?? []
+    }
+}
+
+/// A short video FreeShow plays full screen, such as a welcome or countdown.
+struct Bumper: Codable, Hashable, Identifiable {
+    var name: String
+    /// Where the file is on the FreeShow computer.
+    var path: String
+    /// Name and file together, so the setup file needs no ids.
+    var id: String { name + "\u{1}" + path }
+
+    init(name: String, path: String) { self.name = name; self.path = path }
+
+    private enum Keys: String, CodingKey { case name, path }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Bumper"
+        path = try c.decodeIfPresent(String.self, forKey: .path) ?? ""
+    }
+}
+
 struct ScreenOutput: Codable, Hashable, Identifiable {
     var name: String
     var aux: [Int]
@@ -187,10 +231,12 @@ struct CueConfig: Codable, Equatable {
     /// A Zowietek encoder that does the streaming and recording. When set, the top bar's
     /// Stream and Record buttons run it instead of the switcher.
     var zowietek = ZowietekSetup()
+    /// FreeShow, for the operator's bumper buttons.
+    var freeshow = FreeShowSetup()
 
     init() {}
 
-    private enum Keys: String, CodingKey { case atemHost, me, sources, cameras, keys, trackSpeed, ptzSpeed, trackTilt, trackZoom, mixNames, pictures, screens, routes, framing, trackTuning, zowietek }
+    private enum Keys: String, CodingKey { case atemHost, me, sources, cameras, keys, trackSpeed, ptzSpeed, trackTilt, trackZoom, mixNames, pictures, screens, routes, framing, trackTuning, zowietek, freeshow }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -210,6 +256,7 @@ struct CueConfig: Codable, Equatable {
         framing = try c.decodeIfPresent([String: FramingRule].self, forKey: .framing) ?? [:]
         trackTuning = try c.decodeIfPresent(TrackTuning.self, forKey: .trackTuning) ?? TrackTuning()
         zowietek = try c.decodeIfPresent(ZowietekSetup.self, forKey: .zowietek) ?? ZowietekSetup()
+        freeshow = try c.decodeIfPresent(FreeShowSetup.self, forKey: .freeshow) ?? FreeShowSetup()
     }
 }
 
