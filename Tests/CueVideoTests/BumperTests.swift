@@ -2,19 +2,43 @@ import XCTest
 @testable import CueATEM
 @testable import CueVideo
 
-/// A pretend FreeShow REST API (port 5506), inside the test process. A played video runs
-/// for `length` seconds; "time left" counts down, with FreeShow's empty answer at 0.
+/// A pretend FreeShow REST API (port 5506), inside the test process, with two outputs as at
+/// church: Main (the projector, id "default") and Stream (id "stream1"). Like FreeShow, new
+/// content goes to the unlocked outputs (to all of them when every one is locked), and "time
+/// left" and get_output without an id are about the first unlocked one, by name. A played
+/// video runs for `length` seconds; a background loop never ends.
 final class FakeFreeShow: URLProtocol {
+    struct Video { var path: String; var started: Date; var length: Double }
+    struct Output { let id: String; let name: String; var locked = false; var background: Video?; var slide = false; var style = "" }
+
     static var actions: [[String: Any]] = []
     static var auth: [String?] = []
     static var length = 2.5
-    static var started: Date?
-    static var password: String?
-    /// The file playing as the background, and a loop already playing before the bumper.
-    static var playing: String?
     static var loadDelay = 0.0
+    static var password: String?
+    static var outputs: [Output] = []
 
-    static func reset() { actions = []; auth = []; length = 2.5; started = nil; password = nil; playing = nil; loadDelay = 0 }
+    static func reset() {
+        actions = []; auth = []; length = 2.5; loadDelay = 0; password = nil
+        outputs = [Output(id: "default", name: "Main"), Output(id: "stream1", name: "Stream", style: "566104ca88d")]
+    }
+
+    static var main: Output { outputs[0] }
+    static var stream: Output { outputs[1] }
+
+    /// The outputs new content goes to.
+    static var receiving: [Int] {
+        let open = outputs.indices.filter { !outputs[$0].locked }
+        return open.isEmpty ? Array(outputs.indices) : open
+    }
+
+    /// A background video looping on the outputs taking content, as before a service.
+    static func loopBackground(_ path: String) {
+        for i in receiving { outputs[i].background = Video(path: path, started: Date(), length: .infinity) }
+    }
+
+    /// Someone in the booth puts a slide up in FreeShow.
+    static func showSlide() { for i in receiving { outputs[i].slide = true } }
 
     static var session: URLSession {
         let c = URLSessionConfiguration.ephemeral
@@ -40,27 +64,36 @@ final class FakeFreeShow: URLProtocol {
         Self.actions.append(body); Self.auth.append(header)
         var status = 204
         var out = Data()
+        func answer(_ value: Any) {
+            status = 200
+            out = try! JSONSerialization.data(withJSONObject: ["action": body["action"] ?? "", "data": value], options: .fragmentsAllowed)
+        }
         if let p = Self.password, header != "Bearer \(p)" {
             status = 401; out = Data(#"{"status":401,"error":"Unauthorized"}"#.utf8)
         } else {
             switch body["action"] as? String {
             case "play_media":
                 // FreeShow takes a moment to load the file; until then the old video keeps playing.
-                let path = body["path"] as? String, len = Self.length, delay = Self.loadDelay
-                let start = { Self.started = len > 0 ? Date() : nil; Self.playing = len > 0 ? path : Self.playing }
-                if delay > 0 { DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: start) } else { start() }
-            case "clear_background": Self.started = nil; Self.playing = nil
-            case "get_output":
-                status = 200
-                let bg: Any = Self.playing.map { ["path": $0, "loop": false] as [String: Any] } ?? NSNull()
-                out = try! JSONSerialization.data(withJSONObject: ["action": "get_output", "data": ["background": bg]])
+                let path = body["path"] as? String ?? "", len = Self.length, to = Self.receiving
+                let start = { if len > 0 { for i in to { Self.outputs[i].background = Video(path: path, started: Date(), length: len) } } }
+                if Self.loadDelay > 0 { DispatchQueue.main.asyncAfter(deadline: .now() + Self.loadDelay, execute: start) } else { start() }
+            case "clear_background": for i in Self.receiving { Self.outputs[i].background = nil }
+            case "clear_slide": for i in Self.receiving { Self.outputs[i].slide = false }
+            case "lock_output":
+                if let i = Self.outputs.firstIndex(where: { $0.id == body["outputId"] as? String }) { Self.outputs[i].locked = body["value"] as? Bool ?? false }
+            case "change_output_style":
+                let o = body["outputId"] as? String
+                if let i = Self.outputs.firstIndex(where: { $0.id == o || $0.name == o }) { Self.outputs[i].style = body["styleId"] as? String ?? "" }
             case "get_playing_video_time_left":
-                if let s = Self.started {
-                    let left = Self.length - Date().timeIntervalSince(s)
-                    // As FreeShow answers: {"action": ..., "data": value}.
-                    if left > 0 { status = 200; out = Data(#"{"action":"get_playing_video_time_left","data":\#(left)}"#.utf8) }
+                let first = Self.outputs.first { !$0.locked } ?? Self.outputs[0]
+                if let v = first.background {
+                    let left = v.length.isInfinite ? 5 : v.length - Date().timeIntervalSince(v.started)
+                    if left > 0 { answer(left) }
                 }
-            case "get_cleared": status = 200; out = Data(#"{"action":"get_cleared","data":{"background":true}}"#.utf8)
+            case "get_output":
+                let o: Output? = (body["id"] as? String).map { id in Self.outputs.first { $0.id == id } } ?? (Self.outputs.first { !$0.locked } ?? Self.outputs[0])
+                if let o { answer(["background": o.background.map { ["path": $0.path, "loop": $0.length.isInfinite] as Any } ?? NSNull(), "slide": o.slide ? ["id": "s"] as Any : NSNull() as Any]) } else { answer(NSNull()) }
+            case "get_cleared": answer(["background": true])
             default: break
             }
         }
@@ -86,7 +119,7 @@ final class BumperTests: XCTestCase {
     func player(password: String? = nil, streamOnly: Bool = false) -> BumperPlayer {
         BumperPlayer(booth: booth, session: FakeFreeShow.session, password: { password }) {
             FreeShowSetup(host: "10.0.0.60", input: 3, bumpers: [self.welcome], streamOnly: streamOnly,
-                          streamOutput: "Live Stream", streamStyle: "566104ca88d", lockOutputs: ["default"])
+                          streamOutput: "stream1", streamStyle: "566104ca88d", lockOutputs: ["default"])
         }
     }
 
@@ -109,8 +142,10 @@ final class BumperTests: XCTestCase {
         wait(3) { started != nil }
         XCTAssertEqual(started, .some(nil))
         wait(6) { p.phase == .idle }
-        XCTAssertEqual(steps, ["lock default on", "style Live Stream none", "play_media", "clear_slide", "clear_overlays",
-                               "clear_background", "style Live Stream 566104ca88d", "lock default off"])
+        XCTAssertEqual(steps, ["lock default on", "style stream1 none", "play_media", "clear_slide", "clear_overlays",
+                               "lock stream1 on", "lock default off",          // the projector is free while it plays
+                               "lock stream1 off", "lock default on",          // the end: only the stream is cleared
+                               "clear_background", "style stream1 566104ca88d", "lock default off"])
         XCTAssertEqual(booth.atem.state.program[0], 1)
     }
 
@@ -120,7 +155,7 @@ final class BumperTests: XCTestCase {
         var started: String?? = .none
         p.play(welcome) { started = .some($0) }
         wait(BumperPlayer.startWait + 3) { started != nil }
-        XCTAssertEqual(Array(steps.suffix(2)), ["style Live Stream 566104ca88d", "lock default off"])
+        XCTAssertEqual(Array(steps.suffix(2)), ["style stream1 566104ca88d", "lock default off"])
         XCTAssertFalse(steps.contains("clear_slide"), "a bumper that never starts leaves the words alone")
     }
 
@@ -132,7 +167,7 @@ final class BumperTests: XCTestCase {
         wait(3) { started != nil }
         p.stop()
         wait(4) { p.phase == .idle }
-        XCTAssertEqual(Array(steps.suffix(3)), ["clear_background", "style Live Stream 566104ca88d", "lock default off"])
+        XCTAssertEqual(Array(steps.suffix(3)), ["clear_background", "style stream1 566104ca88d", "lock default off"])
     }
 
     func testWithoutStreamOnlyNothingIsLocked() {
@@ -184,8 +219,7 @@ final class BumperTests: XCTestCase {
 
     func testALoopingBackgroundIsNotTakenForTheBumper() {
         // A background loop is playing; the bumper takes 1.5 s to load.
-        FakeFreeShow.playing = "C:\\Backgrounds\\loop.mp4"
-        FakeFreeShow.started = Date().addingTimeInterval(-1)
+        FakeFreeShow.loopBackground("C:\\Backgrounds\\loop.mp4")
         FakeFreeShow.length = 3
         FakeFreeShow.loadDelay = 1.5
         let p = player()
@@ -197,6 +231,77 @@ final class BumperTests: XCTestCase {
         XCTAssertGreaterThan(Date().timeIntervalSince(asked), 1.4, "on air only once the bumper itself is playing")
         XCTAssertEqual(booth.atem.state.program[0], 3)
         wait(6) { p.phase == .idle }
+    }
+
+    func testTheProjectorIsFreeWhileAStreamOnlyBumperPlays() {
+        FakeFreeShow.loopBackground("C:\\Backgrounds\\loop.mp4")
+        FakeFreeShow.length = 3
+        let p = player(streamOnly: true)
+        var started: String?? = .none
+        p.play(welcome) { started = .some($0) }
+        wait(3) { started != nil }
+        XCTAssertEqual(started, .some(nil))
+        XCTAssertTrue(p.projectorFree)
+        XCTAssertFalse(FakeFreeShow.main.locked, "slides can change on the projector")
+        XCTAssertTrue(FakeFreeShow.stream.locked, "the stream keeps the bumper")
+        FakeFreeShow.showSlide()
+        XCTAssertTrue(FakeFreeShow.main.slide)
+        XCTAssertFalse(FakeFreeShow.stream.slide, "the projector's slide doesn't reach the stream")
+        XCTAssertEqual(FakeFreeShow.stream.background?.path, welcome.path)
+        // "Time left" now tells the projector's loop; the bumper still ends on time.
+        wait(5) { p.phase == .idle }
+        XCTAssertEqual(p.phase, .idle)
+        XCTAssertEqual(booth.atem.state.program[0], 1)
+        XCTAssertNil(FakeFreeShow.stream.background, "the bumper is cleared off the stream")
+        XCTAssertEqual(FakeFreeShow.main.background?.path, "C:\\Backgrounds\\loop.mp4", "the projector keeps its background")
+        XCTAssertTrue(FakeFreeShow.main.slide, "and its slide")
+        XCTAssertFalse(FakeFreeShow.main.locked); XCTAssertFalse(FakeFreeShow.stream.locked)
+        XCTAssertEqual(FakeFreeShow.stream.style, "566104ca88d")
+    }
+
+    func testAnotherBumperTakesOverWithNoFade() {
+        let splash = Bumper(name: "Splash", path: "C:\\Videos\\splash.mp4")
+        FakeFreeShow.loopBackground("C:\\Backgrounds\\loop.mp4")
+        FakeFreeShow.length = 30
+        let p = player(streamOnly: true)
+        var first: String?? = .none, second: String?? = .none
+        p.play(welcome) { first = .some($0) }
+        wait(3) { first != nil }
+        XCTAssertEqual(booth.atem.state.program[0], 3)
+        var leftFreeShow = false
+        let watch = booth.atem.$state.sink { if $0.program[0] != 3 { leftFreeShow = true } }
+        p.play(splash) { second = .some($0) }
+        wait(4) { second != nil }
+        watch.cancel()
+        XCTAssertEqual(second, .some(nil))
+        XCTAssertEqual(first, .some(nil), "the first was told once, when it went on air")
+        XCTAssertFalse(leftFreeShow, "no fade between bumpers")
+        XCTAssertEqual(p.current, splash)
+        XCTAssertEqual(p.phase, .playing)
+        XCTAssertEqual(FakeFreeShow.stream.background?.path, splash.path)
+        XCTAssertEqual(FakeFreeShow.main.background?.path, "C:\\Backgrounds\\loop.mp4", "the projector never got either bumper")
+        XCTAssertTrue(p.projectorFree)
+        XCTAssertFalse(FakeFreeShow.main.locked)
+
+        p.stop()
+        wait(4) { p.phase == .idle }
+        XCTAssertEqual(booth.atem.state.program[0], 1, "back to what was Live before the first bumper")
+        XCTAssertEqual(booth.atem.state.preview[0], 2)
+        XCTAssertNil(FakeFreeShow.stream.background)
+        XCTAssertEqual(FakeFreeShow.main.background?.path, "C:\\Backgrounds\\loop.mp4")
+        XCTAssertFalse(FakeFreeShow.main.locked); XCTAssertFalse(FakeFreeShow.stream.locked)
+    }
+
+    func testPressingThePlayingBumperAgainIsTurnedDown() {
+        FakeFreeShow.length = 30
+        let p = player()
+        var started: String?? = .none, again: String?? = .none
+        p.play(welcome) { started = .some($0) }
+        wait(3) { started != nil }
+        p.play(welcome) { again = .some($0) }
+        XCTAssertEqual(again, .some("Welcome is already playing."))
+        p.stop()
+        wait(4) { p.phase == .idle }
     }
 
     func testFreeShowGetsFifteenSecondsToStartAVideo() {

@@ -711,7 +711,8 @@ struct TakePanel: View {
                         .help(on ? "Take \(k.label) off (\(k.target))" : "Put \(k.label) on (\(k.target))")
                 }
                 // Bumper videos in FreeShow: one press plays it and fades to it, and it fades
-                // back by itself at the end. Pressed again while it plays, it ends early.
+                // back by itself at the end. Pressed again while it plays, it ends early; another
+                // bumper pressed while one plays takes over.
                 if !store.config.freeshow.host.isEmpty {
                     ForEach(store.config.freeshow.bumpers) { b in
                         let mine = bumpers.current?.id == b.id
@@ -720,9 +721,12 @@ struct TakePanel: View {
                                     width: 121, height: 48, titleSize: 13) {
                             if mine { bumpers.stop() } else { bumpers.play(b) }
                         }
-                        .disabled(bumpers.phase != .idle && !mine)
-                        .opacity(bumpers.phase != .idle && !mine ? 0.45 : 1)
-                        .help(mine ? "End \(b.name) now and fade back" : "Play \(b.name) in FreeShow, fade to it, and fade back when it ends")
+                        // Another bumper can take over while one plays, but not while one ends.
+                        .disabled(bumpers.phase == .ending && !mine)
+                        .opacity(bumpers.phase == .ending && !mine ? 0.45 : 1)
+                        .help(mine ? "End \(b.name) now and fade back"
+                              : bumpers.phase == .idle ? "Play \(b.name) in FreeShow, fade to it, and fade back when it ends"
+                              : "Switch to \(b.name) on the stream, with no fade")
                     }
                 }
             }
@@ -741,7 +745,7 @@ struct TakePanel: View {
 extension TakePanel {
     /// What a bumper button says under its name: PLAY, STARTING, the time left, or ENDING.
     func bumperSubtitle(_ mine: Bool) -> String {
-        guard mine else { return "PLAY" }
+        guard mine else { return bumpers.phase == .idle ? "PLAY" : "SWITCH" }
         switch bumpers.phase {
         case .starting: return "STARTING"
         case .ending: return "ENDING"

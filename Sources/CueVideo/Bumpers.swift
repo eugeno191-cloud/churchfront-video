@@ -75,8 +75,9 @@ final class FreeShowClient {
 
     /// The file the output is playing as its background now, if FreeShow says (nil when none,
     /// or from a FreeShow too old to say).
-    func backgroundPath() async throws -> String? {
-        let out = try await send("get_output") as? [String: Any]
+    /// `output` (an output id) asks about that output; nil asks about the first unlocked one.
+    func backgroundPath(output: String? = nil) async throws -> String? {
+        let out = try await send("get_output", output.map { ["id": $0] } ?? [:]) as? [String: Any]
         return (out?["background"] as? [String: Any])?["path"] as? String
     }
 
@@ -86,8 +87,10 @@ final class FreeShowClient {
     func isPlaying(_ path: String) async throws -> Bool {
         guard try await timeLeft() > 0 else { return false }
         guard let now = try await backgroundPath() else { return true }
-        return now.caseInsensitiveCompare(path) == .orderedSame
+        return Self.same(now, path)
     }
+
+    static func same(_ a: String, _ b: String) -> Bool { a.caseInsensitiveCompare(b) == .orderedSame }
 
     func clearBackground() async throws { try await send("clear_background") }
 
@@ -130,6 +133,10 @@ enum LocalFreeShow {
 /// Plays a bumper: FreeShow starts the video, the switcher fades to FreeShow's input once it's
 /// running, and fades back to what was Live when it's about to end (or when stopped). Next is
 /// put back as it was. If the video never starts, the switcher isn't touched.
+///
+/// Another bumper can be pressed while one plays: it takes over on the stream with no fade.
+/// With stream only, once the bumper is running the stream output is locked on it and the
+/// projector is unlocked, so slides can change on the projector while the bumper plays.
 final class BumperPlayer: ObservableObject {
     static let shared = BumperPlayer()
 
@@ -140,13 +147,17 @@ final class BumperPlayer: ObservableObject {
     @Published private(set) var current: Bumper?
     @Published private(set) var timeLeft: Double?
     @Published var problem: String?
+    /// Stream only: the stream output is locked on the bumper and the projector is free.
+    @Published private(set) var projectorFree = false
 
     private let booth: Booth
     private let session: URLSession?
     private let password: () -> String?
     private let setupOverride: (() -> FreeShowSetup)?
-    /// Bumped to call off whatever the play loop is doing (Stop, or a new setup).
+    /// Bumped to call off whatever the play loop is doing (Stop, or another bumper).
     private var run = 0
+    /// Runs that another bumper took over from: they leave everything to it.
+    private var replaced = Set<Int>()
     private var returnTo: (live: Int?, next: Int?) = (nil, nil)
     /// While a stream-only bumper runs: what was changed in FreeShow, to put back.
     private var changed: (locked: [String], style: (output: String, id: String)?) = ([], nil)
@@ -172,64 +183,104 @@ final class BumperPlayer: ObservableObject {
     /// How long the switcher's fade takes, in seconds (its mix rate, at 30 frames a second).
     var fadeSeconds: Double { Double(booth.atem.state.mixRate[booth.me] ?? 30) / 30 }
 
-    /// Plays a bumper. Calls back on the main thread once it's on air (nil) or with what went wrong.
+    /// Plays a bumper, or switches to it if another is playing. Calls back on the main thread
+    /// once it's on air (nil) or with what went wrong.
     func play(_ b: Bumper, started: ((String?) -> Void)? = nil) {
-        guard phase == .idle else { started?("A bumper is already playing."); return }
         guard let client else { started?("FreeShow isn't set up. Add its address in Setup."); return }
-        let atem = booth.atem, me = booth.me, input = setup.input
+        let switching: Bool
+        switch phase {
+        case .idle: switching = false
+        case .starting, .playing:
+            if b == current { started?("\(b.name) is already playing."); return }
+            switching = true
+            replaced.insert(run)
+        case .ending: started?("A bumper is just ending. Try again in a moment."); return
+        }
+        let atem = booth.atem, me = booth.me
         run += 1
         let r = run
+        if !switching { returnTo = (atem.state.program[me], atem.state.preview[me]) }
         current = b; phase = .starting; timeLeft = nil; problem = nil
-        returnTo = (atem.state.program[me], atem.state.preview[me])
-        Task { @MainActor in
-            // The caller hears exactly once: on air, or why not.
-            var told = false
-            func tell(_ why: String?) { if !told { told = true; started?(why) } }
-            do {
-                try await self.prepare(client)
-                try await client.play(b.path)
-                // Wait for the video to be running before anything goes to air. A long file
-                // can take FreeShow several seconds to load (a 5-minute one took about 4).
-                // A background video already looping has time left too, so check it's this file.
-                var left = 0.0
-                for _ in 0..<Int(Self.startWait / 0.2) {
-                    if r != self.run { break }
-                    if try await client.isPlaying(b.path) { left = try await client.timeLeft(); if left > 0 { break } }
-                    try await Task.sleep(nanoseconds: 200_000_000)
-                }
-                guard r == self.run else {
-                    try? await client.clearBackground()
-                    await self.putBack(client)
-                    tell("Stopped before it went on air."); return
-                }
-                guard left > 0 else { throw FreeShowError.didNotStart }
-                // The video is running: take any verse, lyric or overlay off it, so nothing
-                // is laid over the bumper. (With stream only, the projector is locked and keeps its words.)
-                try? await client.clearWords()
-                if atem.state.program[me] != input {
-                    atem.setPreview(input, me: me)
-                    try await Task.sleep(nanoseconds: 80_000_000)
-                    atem.auto(me: me)
-                }
-                self.phase = .playing
-                self.timeLeft = left
-                tell(nil)
-                // Fade back just before the end, so the fade finishes as the video does.
-                while r == self.run {
-                    left = try await client.timeLeft()
-                    self.timeLeft = left
-                    if left <= self.fadeSeconds + 0.2 { break }
-                    try await Task.sleep(nanoseconds: 250_000_000)
-                }
-                guard r == self.run else { return }
-                await self.fadeBack(client)
-            } catch {
-                guard r == self.run else { await self.putBack(client); tell("Stopped before it went on air."); return }
-                let why = (error as? FreeShowError)?.description ?? "\(error)"
-                self.problem = why
-                if self.phase == .playing { await self.fadeBack(client) } else { await self.putBack(client); self.reset() }
-                tell(why)
+        Task { @MainActor in await self.perform(b, r, client, switching: switching, started: started) }
+    }
+
+    @MainActor
+    private func perform(_ b: Bumper, _ r: Int, _ client: FreeShowClient, switching: Bool, started: ((String?) -> Void)?) async {
+        let atem = booth.atem, me = booth.me, s = setup, input = s.input
+        // The caller hears exactly once: on air, or why not.
+        var told = false
+        func tell(_ why: String?) { if !told { told = true; started?(why) } }
+        do {
+            // Switching: the stream output takes new content again (the projector stays out).
+            if switching { await takeStreamBack(client) } else { try await prepare(client) }
+            if replaced.contains(r) { tell("Another bumper took over."); return }
+            try await client.play(b.path)
+            // Wait for this video to be running before anything goes to air. A long file can
+            // take FreeShow several seconds to load (a 5-minute one took about 4), and a
+            // looping background has time left too, so check it's this file.
+            var left = 0.0
+            for _ in 0..<Int(Self.startWait / 0.2) {
+                if r != run { break }
+                if try await client.isPlaying(b.path) { left = try await client.timeLeft(); if left > 0 { break } }
+                try await Task.sleep(nanoseconds: 200_000_000)
             }
+            if replaced.contains(r) { tell("Another bumper took over."); return }
+            guard r == run else { tell("Stopped before it went on air."); return }
+            guard left > 0 else { throw FreeShowError.didNotStart }
+            // The video is running: take any verse, lyric or overlay off it, so nothing is laid
+            // over the bumper. (With stream only, the projector is locked and keeps its words.)
+            try? await client.clearWords()
+            if atem.state.program[me] != input {
+                atem.setPreview(input, me: me)
+                try await Task.sleep(nanoseconds: 80_000_000)
+                atem.auto(me: me)
+            }
+            // Stream only: lock the stream on the bumper and free the projector. Only when the
+            // stream output's id is right (FreeShow then says the bumper is on it): a lock
+            // by a wrong id does nothing, and the projector's slides would land on the stream.
+            if s.streamOnly, !changed.locked.isEmpty,
+               let path = try? await client.backgroundPath(output: s.streamOutput), FreeShowClient.same(path, b.path) {
+                await freeProjector(client)
+            }
+            phase = .playing
+            timeLeft = left
+            tell(nil)
+            // Fade back just before the end, so the fade finishes as the video does. FreeShow
+            // tells the time left of the first unlocked output, which is the projector once
+            // it's free: then count down here, and look every second that the stream still
+            // plays the bumper (someone may have cleared it).
+            let end = Date().addingTimeInterval(left)
+            var looked = Date()
+            while r == run {
+                if projectorFree {
+                    left = max(0, end.timeIntervalSinceNow)
+                    if Date().timeIntervalSince(looked) >= 1 {
+                        looked = Date()
+                        // A failed question isn't an answer: only a different (or no) video ends it.
+                        var gone = false
+                        do {
+                            let now = try await client.backgroundPath(output: s.streamOutput)
+                            gone = now.map { FreeShowClient.same($0, b.path) } != true
+                        } catch {}
+                        if gone { break }
+                    }
+                } else {
+                    left = try await client.timeLeft()
+                }
+                guard r == run else { break }
+                timeLeft = left
+                if left <= fadeSeconds + 0.2 { break }
+                try await Task.sleep(nanoseconds: 250_000_000)
+            }
+            guard r == run else { return }
+            await fadeBack(client)
+        } catch {
+            if replaced.contains(r) { tell("Another bumper took over."); return }
+            guard r == run else { tell("Stopped before it went on air."); return }
+            let why = (error as? FreeShowError)?.description ?? "\(error)"
+            problem = why
+            if phase == .playing || switching { await fadeBack(client) } else { await putBack(client); reset() }
+            tell(why)
         }
     }
 
@@ -237,12 +288,10 @@ final class BumperPlayer: ObservableObject {
     func stop() {
         guard phase == .starting || phase == .playing, let client else { return }
         run += 1
-        let wasPlaying = phase == .playing
-        Task { @MainActor in
-            if wasPlaying { await self.fadeBack(client) } else { try? await client.clearBackground(); await self.putBack(client); self.reset() }
-        }
+        Task { @MainActor in await self.fadeBack(client) }
     }
 
+    /// Fades back (if the bumper is still what's Live), clears the video and puts FreeShow back.
     @MainActor
     private func fadeBack(_ client: FreeShowClient) async {
         let atem = booth.atem, me = booth.me, input = setup.input
@@ -255,6 +304,8 @@ final class BumperPlayer: ObservableObject {
             try? await Task.sleep(nanoseconds: UInt64((fadeSeconds + 0.3) * 1_000_000_000))
             if let next = returnTo.next, next != input, atem.state.preview[me] != next { atem.setPreview(next, me: me) }
         }
+        // Clear only the stream: the projector is locked again first, so its background stays.
+        await takeStreamBack(client)
         try? await client.clearBackground()
         await putBack(client)
         reset()
@@ -277,9 +328,31 @@ final class BumperPlayer: ObservableObject {
         }
     }
 
+    /// Locks the stream output on the bumper, then unlocks the projector. In that order, so
+    /// the projector's changes never reach the stream; for a moment both are locked, and
+    /// nothing is sent then.
+    @MainActor
+    private func freeProjector(_ client: FreeShowClient) async {
+        let s = setup
+        guard (try? await client.lock(s.streamOutput, true)) != nil else { return }
+        projectorFree = true
+        for id in changed.locked { try? await client.lock(id, false) }
+    }
+
+    /// Undoes freeProjector: unlocks the stream, then locks the projector again. In that order
+    /// so the two are never locked together (FreeShow then sends to every output).
+    @MainActor
+    private func takeStreamBack(_ client: FreeShowClient) async {
+        guard projectorFree else { return }
+        projectorFree = false
+        try? await client.lock(setup.streamOutput, false)
+        for id in changed.locked { try? await client.lock(id, true) }
+    }
+
     /// Puts FreeShow's outputs back as they were before a stream-only bumper.
     @MainActor
     private func putBack(_ client: FreeShowClient) async {
+        await takeStreamBack(client)
         let c = changed
         changed = ([], nil)
         if let st = c.style { try? await client.setStyle(output: st.output, style: st.id) }
