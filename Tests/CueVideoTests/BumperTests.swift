@@ -10,8 +10,11 @@ final class FakeFreeShow: URLProtocol {
     static var length = 2.5
     static var started: Date?
     static var password: String?
+    /// The file playing as the background, and a loop already playing before the bumper.
+    static var playing: String?
+    static var loadDelay = 0.0
 
-    static func reset() { actions = []; auth = []; length = 2.5; started = nil; password = nil }
+    static func reset() { actions = []; auth = []; length = 2.5; started = nil; password = nil; playing = nil; loadDelay = 0 }
 
     static var session: URLSession {
         let c = URLSessionConfiguration.ephemeral
@@ -41,8 +44,16 @@ final class FakeFreeShow: URLProtocol {
             status = 401; out = Data(#"{"status":401,"error":"Unauthorized"}"#.utf8)
         } else {
             switch body["action"] as? String {
-            case "play_media": Self.started = Self.length > 0 ? Date() : nil
-            case "clear_background": Self.started = nil
+            case "play_media":
+                // FreeShow takes a moment to load the file; until then the old video keeps playing.
+                let path = body["path"] as? String, len = Self.length, delay = Self.loadDelay
+                let start = { Self.started = len > 0 ? Date() : nil; Self.playing = len > 0 ? path : Self.playing }
+                if delay > 0 { DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: start) } else { start() }
+            case "clear_background": Self.started = nil; Self.playing = nil
+            case "get_output":
+                status = 200
+                let bg: Any = Self.playing.map { ["path": $0, "loop": false] as [String: Any] } ?? NSNull()
+                out = try! JSONSerialization.data(withJSONObject: ["action": "get_output", "data": ["background": bg]])
             case "get_playing_video_time_left":
                 if let s = Self.started {
                     let left = Self.length - Date().timeIntervalSince(s)
@@ -79,10 +90,10 @@ final class BumperTests: XCTestCase {
         }
     }
 
-    /// The FreeShow commands sent, in order, leaving out the "time left" questions.
+    /// The FreeShow commands sent, in order, leaving out the "time left" and "what's playing" questions.
     var steps: [String] {
         FakeFreeShow.actions.compactMap { a -> String? in
-            guard let name = a["action"] as? String, name != "get_playing_video_time_left" else { return nil }
+            guard let name = a["action"] as? String, name != "get_playing_video_time_left", name != "get_output" else { return nil }
             switch name {
             case "lock_output": return "lock \(a["outputId"] ?? "") \(a["value"] as? Bool == true ? "on" : "off")"
             case "change_output_style": return "style \(a["outputId"] ?? "") \((a["styleId"] as? String).map { $0.isEmpty ? "none" : $0 } ?? "?")"
@@ -169,6 +180,23 @@ final class BumperTests: XCTestCase {
         XCTAssertEqual(booth.atem.state.program[0], 1)
         XCTAssertEqual(booth.atem.state.preview[0], 2)
         XCTAssertEqual(p.phase, .idle)
+    }
+
+    func testALoopingBackgroundIsNotTakenForTheBumper() {
+        // A background loop is playing; the bumper takes 1.5 s to load.
+        FakeFreeShow.playing = "C:\\Backgrounds\\loop.mp4"
+        FakeFreeShow.started = Date().addingTimeInterval(-1)
+        FakeFreeShow.length = 3
+        FakeFreeShow.loadDelay = 1.5
+        let p = player()
+        let asked = Date()
+        var started: String?? = .none
+        p.play(welcome) { started = .some($0) }
+        wait(5) { started != nil }
+        XCTAssertEqual(started, .some(nil))
+        XCTAssertGreaterThan(Date().timeIntervalSince(asked), 1.4, "on air only once the bumper itself is playing")
+        XCTAssertEqual(booth.atem.state.program[0], 3)
+        wait(6) { p.phase == .idle }
     }
 
     func testFreeShowGetsFifteenSecondsToStartAVideo() {

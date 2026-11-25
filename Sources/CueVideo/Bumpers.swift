@@ -73,6 +73,22 @@ final class FreeShowClient {
         return 0
     }
 
+    /// The file the output is playing as its background now, if FreeShow says (nil when none,
+    /// or from a FreeShow too old to say).
+    func backgroundPath() async throws -> String? {
+        let out = try await send("get_output") as? [String: Any]
+        return (out?["background"] as? [String: Any])?["path"] as? String
+    }
+
+    /// Whether `path` is what's playing: a looping background video also has "time left", so
+    /// that alone doesn't show the bumper has started. A FreeShow that doesn't say what's
+    /// playing is taken at its word.
+    func isPlaying(_ path: String) async throws -> Bool {
+        guard try await timeLeft() > 0 else { return false }
+        guard let now = try await backgroundPath() else { return true }
+        return now.caseInsensitiveCompare(path) == .orderedSame
+    }
+
     func clearBackground() async throws { try await send("clear_background") }
 
     /// Takes the slide (verses, lyrics) and overlays off the active outputs, so only the
@@ -174,10 +190,11 @@ final class BumperPlayer: ObservableObject {
                 try await client.play(b.path)
                 // Wait for the video to be running before anything goes to air. A long file
                 // can take FreeShow several seconds to load (a 5-minute one took about 4).
+                // A background video already looping has time left too, so check it's this file.
                 var left = 0.0
                 for _ in 0..<Int(Self.startWait / 0.2) {
-                    left = try await client.timeLeft()
-                    if left > 0 || r != self.run { break }
+                    if r != self.run { break }
+                    if try await client.isPlaying(b.path) { left = try await client.timeLeft(); if left > 0 { break } }
                     try await Task.sleep(nanoseconds: 200_000_000)
                 }
                 guard r == self.run else {
