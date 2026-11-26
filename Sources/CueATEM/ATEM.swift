@@ -60,6 +60,48 @@ public enum ATEMAudioLevel {
     }
 }
 
+/// Sound levels the switcher reports many times a second, in dBFS (-infinity for silence).
+public struct ATEMMeter: Equatable {
+    public var left = -Double.infinity, right = -Double.infinity
+    public var peakLeft = -Double.infinity, peakRight = -Double.infinity
+    public init() {}
+    public init(left: Double, right: Double, peakLeft: Double, peakRight: Double) {
+        self.left = left; self.right = right; self.peakLeft = peakLeft; self.peakRight = peakRight
+    }
+}
+
+public struct ATEMAudioMeters: Equatable {
+    public var master = ATEMMeter()
+    public var inputs: [Int: ATEMMeter] = [:]
+    public init() {}
+
+    /// An AMLv report: count, master and monitor levels, the source numbers (padded to a
+    /// multiple of 4 bytes), then four levels for each source. Levels are 2^23 at full scale.
+    public static func parse(_ d: [UInt8]) -> ATEMAudioMeters? {
+        func u16(_ i: Int) -> Int { Int(d[i]) << 8 | Int(d[i + 1]) }
+        func level(_ i: Int) -> Double {
+            let v = Int(d[i]) << 24 | Int(d[i + 1]) << 16 | Int(d[i + 2]) << 8 | Int(d[i + 3])
+            return v == 0 ? -.infinity : 20 * log10(Double(v) / 8_388_608)
+        }
+        func meter(_ i: Int) -> ATEMMeter { ATEMMeter(left: level(i), right: level(i + 4), peakLeft: level(i + 8), peakRight: level(i + 12)) }
+        guard d.count >= 36 else { return nil }
+        let n = u16(0)
+        let ids = 36, levels = ids + (2 * n + 3) / 4 * 4
+        guard d.count >= levels + 16 * n else { return nil }
+        var m = ATEMAudioMeters()
+        m.master = meter(4)
+        for k in 0..<n { m.inputs[u16(ids + 2 * k)] = meter(levels + 16 * k) }
+        return m
+    }
+}
+
+/// The switcher's sound levels, at most 15 times a second.
+public final class ATEMLevelFeed: ObservableObject {
+    @Published public private(set) var meters = ATEMAudioMeters()
+    public init() {}
+    public func update(_ m: ATEMAudioMeters) { if meters != m { meters = m } }
+}
+
 public struct ATEMState: Equatable {
     public var product = ""
     public var version = ""
@@ -152,6 +194,7 @@ public struct ATEMLogEntry: Identifiable {
         case "FtbA": return "Fade to black, \(me)"
         case "CAuS": return "Aux \(Int(data.count > 1 ? data[1] : 0) + 1): \(state.inputs[u16(2)]?.long ?? "input \(u16(2))")"
         case "CAMI": return "Audio \(u16(2)): " + (data.first == 1 ? ["off", "on", "follow video"][min(2, Int(data.count > 4 ? data[4] : 0))] : "level \(ATEMAudioLevel.dB(u16(6)).map { String(format: "%.1f dB", $0) } ?? "silent")")
+        case "SALN": return "Audio levels \(data.first == 1 ? "on" : "off")"
         case "CAMM": return "Audio master: \(ATEMAudioLevel.dB(u16(2)).map { String(format: "%.1f dB", $0) } ?? "silent")"
         case "MAct": return u16(0) == 0xFFFF ? "Stop macro" : "Run macro \(u16(0) + 1)"
         case "StrR": return "Streaming \(data.first == 1 ? "start" : "stop")"
@@ -174,6 +217,10 @@ public final class ATEMClient: ObservableObject {
     /// Offline mode: no switcher, so a pretend one inside the app takes the commands and
     /// answers as a switcher would. Nothing goes out on the network.
     @Published public private(set) var simulated = false
+    /// Sound levels, in their own object because they change many times a second: only
+    /// the meters watch it, so the rest of the page isn't redrawn with every level.
+    public let levels = ATEMLevelFeed()
+    private var metersSent = 0.0
 
     private let queue = DispatchQueue(label: "cuevideo.atem")
     private var conn: NWConnection?
@@ -426,6 +473,14 @@ public final class ATEMClient: ObservableObject {
         case "InCm":
             ready = true
             setLink(.online)
+            // Ask for sound levels; they come only to connections that ask.
+            send("SALN", [1, 0, 0, 0])
+        case "AMLv":
+            let t = now()
+            if t - metersSent >= 1.0 / 15, let m = ATEMAudioMeters.parse(d) {
+                metersSent = t
+                DispatchQueue.main.async { self.levels.update(m) }
+            }
         case "_ver" where d.count >= 4: s.version = "\(u16(d, 0)).\(u16(d, 2))"
         case "_pin": s.product = str(d, 0..<44)
         case "InPr" where d.count >= 26:

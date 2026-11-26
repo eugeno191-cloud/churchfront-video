@@ -68,3 +68,49 @@ final class AudioMixerTests: XCTestCase {
         wait(for: [e], timeout: 2)
     }
 }
+
+/// Sound levels as the church switcher reports them.
+final class AudioMeterTests: XCTestCase {
+    private func be32(_ v: UInt32) -> [UInt8] { [UInt8(v >> 24), UInt8(v >> 16 & 0xFF), UInt8(v >> 8 & 0xFF), UInt8(v & 0xFF)] }
+    private func full(_ dB: Double) -> UInt32 { UInt32((8_388_608 * pow(10, dB / 20)).rounded()) }
+
+    private func report(_ ids: [Int], master: Double, each: Double) -> [UInt8] {
+        var d: [UInt8] = [UInt8(ids.count >> 8), UInt8(ids.count & 0xFF), 0, 0]
+        d += be32(full(master)) + be32(full(master)) + be32(full(master + 4)) + be32(full(master + 4))
+        d += [UInt8](repeating: 0, count: 16)   // monitor
+        for i in ids { d += [UInt8(i >> 8), UInt8(i & 0xFF)] }
+        while d.count % 4 != 0 { d.append(0) }
+        for _ in ids { d += be32(full(each)) + be32(0) + be32(full(each + 3)) + be32(0) }
+        return d
+    }
+
+    func testReadsTheChurchLayout() {
+        // 14 sources, as the 1 M/E Production Studio 4K sends: 288 bytes, levels from byte 64.
+        let ids = Array(1...10) + [2001, 2002, 1201, 1001]
+        let d = report(ids, master: -13, each: -16)
+        XCTAssertEqual(d.count, 288)
+        let m = ATEMAudioMeters.parse(d)!
+        XCTAssertEqual(m.master.left, -13, accuracy: 0.01)
+        XCTAssertEqual(m.master.peakRight, -9, accuracy: 0.01)
+        XCTAssertEqual(m.inputs.count, 14)
+        XCTAssertEqual(m.inputs[1001]!.left, -16, accuracy: 0.01)
+        XCTAssertEqual(m.inputs[1001]!.peakLeft, -13, accuracy: 0.01)
+        XCTAssertEqual(m.inputs[3]!.right, -.infinity, "silence")
+    }
+
+    func testOddCountIsPadded() {
+        let m = ATEMAudioMeters.parse(report([3, 1001, 1201], master: -20, each: -30))!
+        XCTAssertEqual(m.inputs[1201]!.left, -30, accuracy: 0.01)
+    }
+
+    func testShortReportIsIgnored() {
+        XCTAssertNil(ATEMAudioMeters.parse(Array(report([3, 1001], master: -20, each: -30).dropLast(4))))
+    }
+
+    func testMeterScale() {
+        XCTAssertEqual(LevelMeter.fraction(0), 1)
+        XCTAssertEqual(LevelMeter.fraction(-30), 0.5, accuracy: 0.001)
+        XCTAssertEqual(LevelMeter.fraction(-80), 0)
+        XCTAssertEqual(LevelMeter.fraction(-.infinity), 0)
+    }
+}

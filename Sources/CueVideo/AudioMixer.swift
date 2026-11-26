@@ -23,7 +23,10 @@ struct AudioMixer: View {
                     }
                     if let m = s.audioMaster {
                         Rectangle().fill(T.line).frame(width: 1).padding(.vertical, T.s2)
-                        GainKnob(title: "Master", level: m) { atem.setAudioMaster($0) }
+                        VStack(spacing: T.s2) {
+                            GainKnob(title: "Master", level: m) { atem.setAudioMaster($0) }
+                            MeterReading(feed: atem.levels, input: nil).frame(width: 22).frame(maxHeight: .infinity)
+                        }
                     }
                 }
                 .frame(maxHeight: .infinity)
@@ -153,9 +156,12 @@ struct AudioStrip: View {
                     })
                 .onTapGesture(count: 2) { atem.setAudioLevel(input, ATEMAudioLevel.level(0)) }
             }
-            .frame(width: 44)
+            .frame(width: 40)
             .frame(minHeight: 80)
             .help("Drag to set \(name)'s level. Double-click for 0 dB.")
+            .overlay(alignment: .trailing) {
+                MeterReading(feed: atem.levels, input: input).frame(width: 10).offset(x: 12)
+            }
             Button {
                 atem.setAudioMix(input, mix == 0 ? 1 : 0)
             } label: {
@@ -222,5 +228,54 @@ struct GainKnob: View {
             Text(title).font(.sans(11, .semibold)).foregroundStyle(T.inkMuted)
         }
         .frame(width: 70)
+    }
+}
+
+/// A stereo level meter fed by the switcher: one input's, or the master's when input is nil.
+struct MeterReading: View {
+    @ObservedObject var feed: ATEMLevelFeed
+    let input: Int?
+    var body: some View {
+        LevelMeter(meter: input.map { feed.meters.inputs[$0] ?? ATEMMeter() } ?? feed.meters.master)
+            .help("Sound level: green is normal, yellow is loud, red is too loud. The line is the recent peak.")
+    }
+}
+
+/// Left and right bars from −60 to 0 dBFS: green, yellow from −20, red from −9, with a
+/// line at the peak.
+struct LevelMeter: View {
+    let meter: ATEMMeter
+    static let floor = -60.0
+    static func fraction(_ dB: Double) -> Double { dB.isFinite ? min(1, max(0, (dB - floor) / -floor)) : 0 }
+
+    var body: some View {
+        GeometryReader { g in
+            let w = max(1, (g.size.width - 2) / 2), h = g.size.height
+            HStack(spacing: 2) {
+                bar(meter.left, meter.peakLeft, w, h)
+                bar(meter.right, meter.peakRight, w, h)
+            }
+        }
+    }
+
+    private func bar(_ level: Double, _ peak: Double, _ w: CGFloat, _ h: CGFloat) -> some View {
+        let f = Self.fraction(level), p = Self.fraction(peak)
+        let yellow = Self.fraction(-20), red = Self.fraction(-9)
+        return ZStack(alignment: .bottom) {
+            RoundedRectangle(cornerRadius: 1.5).fill(Color.black.opacity(0.45))
+            LinearGradient(stops: [
+                .init(color: Color.green, location: 0), .init(color: Color.green, location: yellow),
+                .init(color: Color.yellow, location: yellow), .init(color: Color.yellow, location: red),
+                .init(color: Color.red, location: red), .init(color: Color.red, location: 1),
+            ], startPoint: .bottom, endPoint: .top)
+            .mask(alignment: .bottom) { Rectangle().frame(height: h * f) }
+            if p > 0 {
+                Rectangle().fill(p >= red ? Color.red : Color.white.opacity(0.85)).frame(height: 2)
+                    .offset(y: -h * p + 1)
+            }
+        }
+        .frame(width: w, height: h)
+        .clipShape(RoundedRectangle(cornerRadius: 1.5))
+        .animation(.linear(duration: 0.066), value: f)
     }
 }
