@@ -15,7 +15,7 @@ enum FreeShowError: Error, Equatable, CustomStringConvertible {
         switch self {
         case .unreachable(let why): return "FreeShow didn't answer: \(why). Check its address in Setup, and that its API is on (FreeShow: Settings > Connections)."
         case .password: return "FreeShow turned down the password. Check it in Setup, or in FreeShow's Settings > Connections."
-        case .didNotStart: return "FreeShow didn't start the video. Check the file's path on the FreeShow computer."
+        case .didNotStart: return "FreeShow didn't start the video. Check that FreeShow's outputs aren't locked (the padlock in its output area), and the file's path on the FreeShow computer."
         }
     }
 }
