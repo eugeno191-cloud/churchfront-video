@@ -267,7 +267,7 @@ final class BumperPlayer: ObservableObject {
             if atem.state.program[me] != input {
                 atem.setPreview(input, me: me)
                 try await Task.sleep(nanoseconds: 80_000_000)
-                atem.auto(me: me)
+                booth.fade()
             }
             try check()
             // Stream only: lock the stream on the bumper and free the projector. Only when the
@@ -349,7 +349,7 @@ final class BumperPlayer: ObservableObject {
         if atem.state.program[me] == input, let live = returnTo.live, live != input {
             atem.setPreview(live, me: me)
             try? await Task.sleep(nanoseconds: 80_000_000)
-            atem.auto(me: me)
+            booth.fade()
             try? await Task.sleep(nanoseconds: UInt64((fadeSeconds + 0.3) * 1_000_000_000))
             if let next = returnTo.next, next != input, atem.state.preview[me] != next { atem.setPreview(next, me: me) }
         }

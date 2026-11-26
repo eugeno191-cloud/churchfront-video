@@ -663,7 +663,7 @@ struct TakePanel: View {
         VStack(alignment: .leading, spacing: T.s3) {
             // The two ways to take Next live, side by side and the same size.
             HStack(spacing: T.s2) {
-                Button { atem.auto(me: me) } label: {
+                Button { Booth.shared.fade() } label: {
                     VStack(spacing: 2) {
                         Text(fading ? "FADING" : "FADE").font(.sans(24, .bold))
                         Text(fading ? "\(store.label(s.program[me], s)) to \(store.label(s.preview[me], s))"
@@ -683,7 +683,7 @@ struct TakePanel: View {
                 }
                 .buttonStyle(PressStyle())
                 .help("Fade from Live to Next (Return)")
-                Button { atem.cut(me: me) } label: {
+                Button { Booth.shared.cut() } label: {
                     VStack(spacing: 2) {
                         Text("CUT").font(.sans(24, .bold))
                         Text("Space").font(.sans(11, .medium)).opacity(0.85)

@@ -4,6 +4,17 @@ import CueATEM
 
 /// What the whole app shares: the switcher, the cameras and the operator's settings.
 final class Booth: ObservableObject {
+    /// The volunteer Fade and Cut: change the camera, and leave keys and lower thirds as they
+    /// are. If the switcher has a key tied to the next transition (each fade would flip it
+    /// on or off), the tie is taken off first. The Full Switcher page still follows ties.
+    func fade() { untieKeys(); atem.auto(me: me) }
+    func cut() { untieKeys(); atem.cut(me: me) }
+
+    private func untieKeys() {
+        let sel = atem.state.nextSelection[me] ?? 1
+        if sel != 1 { atem.setNextSelection(1, me: me) }
+    }
+
     static let shared = Booth()
     let atem = ATEMClient()
     let ptz = PTZController(load: ProcessInfo.processInfo.environment["CUEVIDEO_FAKECAMS"] == nil)
@@ -130,8 +141,8 @@ final class Booth: ObservableObject {
         }
         guard down, !e.isARepeat else { return down }
         switch e.keyCode {
-        case 49: atem.cut(me: me); return true
-        case 36, 76: atem.auto(me: me); return true
+        case 49: cut(); return true
+        case 36, 76: fade(); return true
         default: break
         }
         // Q W E R T Y U I / A S D F G H J K: the shot deck's tiles, for the camera on Next. [ and ] turn its page.
@@ -264,8 +275,8 @@ struct BoothCommands: Commands {
         // can see what they're about to change.
         CommandMenu("Switcher") {
             Group {
-            Button("Cut (Space)") { booth.atem.cut(me: booth.me) }
-            Button("Fade (Return)") { booth.atem.auto(me: booth.me) }
+            Button("Cut (Space)") { booth.cut() }
+            Button("Fade (Return)") { booth.fade() }
             Button("Fade to Black") { booth.atem.fadeToBlack(me: booth.me) }
             if !store.config.keys.isEmpty {
                 Divider()
