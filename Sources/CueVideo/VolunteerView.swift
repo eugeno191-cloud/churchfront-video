@@ -654,7 +654,6 @@ struct TakePanel: View {
     @EnvironmentObject var atem: ATEMClient
     @EnvironmentObject var store: ConfigStore
     @ObservedObject var bumpers = BumperPlayer.shared
-    @ObservedObject var preaching = Preaching.shared
 
     var body: some View {
         let me = booth.me
@@ -710,17 +709,6 @@ struct TakePanel: View {
                     PanelButton(title: k.label.uppercased(), subtitle: on ? "ON AIR" : "OFF", lit: on ? T.program : nil,
                                 width: 121, height: 48, titleSize: 13) { k.toggle(atem) }
                         .help(on ? "Take \(k.label) off (\(k.target))" : "Put \(k.label) on (\(k.target))")
-                }
-                // The switcher's Preaching On and Off macros on one button: lit after On ran,
-                // and the next press runs Off. Shown when the switcher has both macros.
-                if let m = preaching.macros {
-                    let running = s.macroRunning == m.on || s.macroRunning == m.off
-                    PanelButton(title: "PREACHING", subtitle: running ? "RUNNING" : (preaching.on ? "ON" : "OFF"),
-                                lit: running ? T.warning : (preaching.on ? T.program : nil),
-                                width: 121, height: 48, titleSize: 13, blink: running) { preaching.toggle() }
-                        .disabled(s.macroRunning != nil)
-                        .help(preaching.on ? "Run the switcher's \(s.macros[m.off] ?? "Preaching Off") macro"
-                                           : "Run the switcher's \(s.macros[m.on] ?? "Preaching On") macro")
                 }
                 // Bumper videos in FreeShow: one press plays it and fades to it, and it fades
                 // back by itself at the end. Pressed again while it plays, it ends early; another
