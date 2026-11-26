@@ -74,8 +74,9 @@ final class FakeFreeShow: URLProtocol {
             switch body["action"] as? String {
             case "play_media":
                 // FreeShow takes a moment to load the file; until then the old video keeps playing.
-                let path = body["path"] as? String ?? "", len = Self.length, to = Self.receiving
-                let start = { if len > 0 { for i in to { Self.outputs[i].background = Video(path: path, started: Date(), length: len) } } }
+                let loops = (body["data"] as? [String: Any])?["loop"] as? Bool ?? true
+                let path = body["path"] as? String ?? "", len = loops ? .infinity : Self.length, to = Self.receiving
+                let start = { if Self.length > 0 { for i in to { Self.outputs[i].background = Video(path: path, started: Date(), length: len) } } }
                 if Self.loadDelay > 0 { DispatchQueue.main.asyncAfter(deadline: .now() + Self.loadDelay, execute: start) } else { start() }
             case "clear_background": for i in Self.receiving { Self.outputs[i].background = nil }
             case "clear_slide": for i in Self.receiving { Self.outputs[i].slide = false }
@@ -307,6 +308,48 @@ final class BumperTests: XCTestCase {
         XCTAssertNil(FakeFreeShow.stream.background)
         XCTAssertEqual(FakeFreeShow.main.background?.path, "C:\\Backgrounds\\loop.mp4")
         XCTAssertFalse(FakeFreeShow.main.locked); XCTAssertFalse(FakeFreeShow.stream.locked)
+    }
+
+    func testALoopingBumperPlaysUntilStopped() {
+        let loop = Bumper(name: "Countdown", path: "C:\\Videos\\countdown.mp4", loop: true)
+        FakeFreeShow.length = 1   // a short video: once through would be over long before
+        for streamOnly in [false, true] {
+            FakeFreeShow.reset(); FakeFreeShow.length = 1
+            let p = player(streamOnly: streamOnly)
+            var started: String?? = .none
+            p.play(loop) { started = .some($0) }
+            wait(3) { started != nil }
+            XCTAssertEqual(started, .some(nil))
+            XCTAssertEqual((FakeFreeShow.actions.first { $0["action"] as? String == "play_media" }?["data"] as? [String: Any])?["loop"] as? Bool, true)
+            wait(3) { p.phase != .playing }
+            XCTAssertEqual(p.phase, .playing, "still playing well past the video's length")
+            XCTAssertNil(p.timeLeft, "no countdown for a loop")
+            XCTAssertEqual(booth.atem.state.program[0], 3)
+            p.stop()
+            wait(4) { p.phase == .idle }
+            XCTAssertEqual(booth.atem.state.program[0], 1)
+            XCTAssertFalse(FakeFreeShow.main.locked); XCTAssertFalse(FakeFreeShow.stream.locked)
+            wait(2) { self.booth.atem.state.preview[0] == 2 }
+        }
+    }
+
+    func testALoopingBumperEndsIfClearedInFreeShow() {
+        let loop = Bumper(name: "Countdown", path: "C:\\Videos\\countdown.mp4", loop: true)
+        let p = player(streamOnly: true)
+        var started: String?? = .none
+        p.play(loop) { started = .some($0) }
+        wait(3) { started != nil }
+        FakeFreeShow.outputs[1].background = nil   // someone clears it in FreeShow
+        wait(4) { p.phase == .idle }
+        XCTAssertEqual(p.phase, .idle)
+        XCTAssertEqual(booth.atem.state.program[0], 1)
+    }
+
+    func testOnlyALoopIsWrittenToTheSetupFile() throws {
+        let once = String(data: try JSONEncoder().encode(welcome), encoding: .utf8)!
+        XCTAssertFalse(once.contains("loop"))
+        let again = try JSONDecoder().decode(Bumper.self, from: JSONEncoder().encode(Bumper(name: "A", path: "/a", loop: true)))
+        XCTAssertTrue(again.loop)
     }
 
     func testPressingThePlayingBumperAgainIsTurnedDown() {

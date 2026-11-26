@@ -502,7 +502,7 @@ struct FreeShowCard: View {
                         get: { fs.streamOnly }, set: { v in store.update { $0.freeshow.streamOnly = v } }))
                         .toggleStyle(.checkbox).font(.sans(13))
                     if fs.streamOnly {
-                        Text("While a bumper plays, the outputs below are locked in FreeShow (they keep showing what they had, and ignore slide changes until it ends), and the stream output's style is lifted so the video shows instead of green. Both are put back when it ends.")
+                        Text("While a bumper starts, the outputs below are locked in FreeShow so the video doesn't reach them, and the stream output's style is lifted so the video shows instead of green. Once it's running, the stream output is locked on it and the outputs below are free again, so slides can change on the projector. Everything is put back when it ends.")
                             .font(.sans(12)).foregroundStyle(T.inkSubtle).fixedSize(horizontal: false, vertical: true).frame(maxWidth: 520, alignment: .leading)
                         HStack(spacing: T.s2) {
                             Text("Stream output").font(.sans(12)).foregroundStyle(T.inkMuted).frame(width: 110, alignment: .leading)
@@ -534,6 +534,9 @@ struct FreeShowCard: View {
                             Text(b.name).font(.sans(13, .semibold)).frame(width: 140, alignment: .leading).lineLimit(1)
                             Text(b.path).font(.system(size: 11, design: .monospaced)).foregroundStyle(T.inkMuted).lineLimit(1).truncationMode(.middle)
                                 .frame(maxWidth: 320, alignment: .leading)
+                            Toggle("Loop", isOn: Binding(get: { b.loop }, set: { v in store.update { $0.freeshow.bumpers[i].loop = v } }))
+                                .toggleStyle(.checkbox).font(.sans(12))
+                                .help("Play \(b.name) over and over until its button is pressed again (or another bumper is), instead of once")
                             Button { store.update { $0.freeshow.bumpers.remove(at: i) } } label: { Image(systemName: "trash") }
                                 .buttonStyle(.borderless).foregroundStyle(T.danger).help("Remove \(b.name)")
                         }

@@ -59,9 +59,9 @@ final class FreeShowClient {
         return json
     }
 
-    /// Plays a video file once, with its sound (FreeShow loops and mutes by default).
-    func play(_ path: String) async throws {
-        try await send("play_media", ["path": path, "data": ["loop": false, "muted": false]])
+    /// Plays a video file with its sound, once or over and over (FreeShow loops and mutes by default).
+    func play(_ path: String, loop: Bool = false) async throws {
+        try await send("play_media", ["path": path, "data": ["loop": loop, "muted": false]])
     }
 
     /// Seconds left in the video playing now; 0 when none is.
@@ -134,6 +134,7 @@ enum LocalFreeShow {
 /// running, and fades back to what was Live when it's about to end (or when stopped). Next is
 /// put back as it was. If the video never starts, the switcher isn't touched.
 ///
+/// A bumper set to loop plays over and over until stopped, and never fades back by itself.
 /// Another bumper can be pressed while one plays: it takes over on the stream with no fade.
 /// With stream only, once the bumper is running the stream output is locked on it and the
 /// projector is unlocked, so slides can change on the projector while the bumper plays.
@@ -214,7 +215,7 @@ final class BumperPlayer: ObservableObject {
             // Switching: the stream output takes new content again (the projector stays out).
             if switching { await takeStreamBack(client) } else { try await prepare(client) }
             if replaced.contains(r) { tell("Another bumper took over."); return }
-            try await client.play(b.path)
+            try await client.play(b.path, loop: b.loop)
             // Wait for this video to be running before anything goes to air. A long file can
             // take FreeShow several seconds to load (a 5-minute one took about 4), and a
             // looping background has time left too, so check it's this file.
@@ -243,33 +244,40 @@ final class BumperPlayer: ObservableObject {
                 await freeProjector(client)
             }
             phase = .playing
-            timeLeft = left
+            timeLeft = b.loop ? nil : left
             tell(nil)
             // Fade back just before the end, so the fade finishes as the video does. FreeShow
             // tells the time left of the first unlocked output, which is the projector once
             // it's free: then count down here, and look every second that the stream still
             // plays the bumper (someone may have cleared it).
+            // A looping bumper has no end: it plays until stopped, so only look that it's still
+            // there (someone may have cleared it in FreeShow).
             let end = Date().addingTimeInterval(left)
             var looked = Date()
+            /// Whether the bumper is gone from the output it plays on. A failed question isn't
+            /// an answer: only a different (or no) video ends it.
+            func gone() async -> Bool {
+                guard Date().timeIntervalSince(looked) >= 1 else { return false }
+                looked = Date()
+                do {
+                    let now = try await client.backgroundPath(output: projectorFree ? s.streamOutput : nil)
+                    return now.map { FreeShowClient.same($0, b.path) } != true
+                } catch { return false }
+            }
             while r == run {
-                if projectorFree {
+                if b.loop {
+                    if await gone() { break }
+                } else if projectorFree {
                     left = max(0, end.timeIntervalSinceNow)
-                    if Date().timeIntervalSince(looked) >= 1 {
-                        looked = Date()
-                        // A failed question isn't an answer: only a different (or no) video ends it.
-                        var gone = false
-                        do {
-                            let now = try await client.backgroundPath(output: s.streamOutput)
-                            gone = now.map { FreeShowClient.same($0, b.path) } != true
-                        } catch {}
-                        if gone { break }
-                    }
+                    if await gone() { break }
                 } else {
                     left = try await client.timeLeft()
                 }
                 guard r == run else { break }
-                timeLeft = left
-                if left <= fadeSeconds + 0.2 { break }
+                if !b.loop {
+                    timeLeft = left
+                    if left <= fadeSeconds + 0.2 { break }
+                }
                 try await Task.sleep(nanoseconds: 250_000_000)
             }
             guard r == run else { return }

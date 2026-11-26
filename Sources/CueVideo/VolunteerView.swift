@@ -724,7 +724,7 @@ struct TakePanel: View {
                         // Another bumper can take over while one plays, but not while one ends.
                         .disabled(bumpers.phase == .ending && !mine)
                         .opacity(bumpers.phase == .ending && !mine ? 0.45 : 1)
-                        .help(mine ? "End \(b.name) now and fade back"
+                        .help(mine ? "End \(b.name) now and fade back" + (b.loop ? " (it loops until you do)" : "")
                               : bumpers.phase == .idle ? "Play \(b.name) in FreeShow, fade to it, and fade back when it ends"
                               : "Switch to \(b.name) on the stream, with no fade")
                     }
@@ -749,6 +749,7 @@ extension TakePanel {
         switch bumpers.phase {
         case .starting: return "STARTING"
         case .ending: return "ENDING"
+        case .playing where bumpers.current?.loop == true: return "LOOPING"
         default:
             let t = Int((bumpers.timeLeft ?? 0).rounded(.up))
             return String(format: "ON AIR %d:%02d", t / 60, t % 60)

@@ -126,16 +126,26 @@ struct Bumper: Codable, Hashable, Identifiable {
     var name: String
     /// Where the file is on the FreeShow computer.
     var path: String
+    /// Plays over and over until stopped (or another bumper takes over), instead of once.
+    var loop = false
     /// Name and file together, so the setup file needs no ids.
     var id: String { name + "\u{1}" + path }
 
-    init(name: String, path: String) { self.name = name; self.path = path }
+    init(name: String, path: String, loop: Bool = false) { self.name = name; self.path = path; self.loop = loop }
 
-    private enum Keys: String, CodingKey { case name, path }
+    private enum Keys: String, CodingKey { case name, path, loop }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Bumper"
         path = try c.decodeIfPresent(String.self, forKey: .path) ?? ""
+        loop = try c.decodeIfPresent(Bool.self, forKey: .loop) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Keys.self)
+        try c.encode(name, forKey: .name)
+        try c.encode(path, forKey: .path)
+        if loop { try c.encode(true, forKey: .loop) }
     }
 }
 
