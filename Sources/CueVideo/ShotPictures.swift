@@ -65,10 +65,13 @@ final class ShotPictures: ObservableObject {
         revision[shot, default: 0] += 1
     }
 
-    /// Takes the camera's picture now and keeps it for the shot. Waits up to 4 s for the
+    /// Takes the camera's picture now and keeps it for the shot. Waits up to 10 s for the
     /// picture to start if nothing is showing it. Calls back on the main thread.
     func capture(_ c: PTZCamera, shot: UUID, done: ((Bool) -> Void)? = nil) {
-        guard let picture = CameraPicture.of(c) else { done?(false); return }
+        guard let picture = CameraPicture.of(c) else {
+            log("\(c.name): no live picture set up for it (input \(c.atemInput))"); done?(false); return
+        }
+        log("\(c.name): taking the picture for shot \(shot.uuidString.prefix(8)) from \(picture)")
         taking.insert(shot)
         picture.retain()
         var tries = 0
@@ -76,16 +79,30 @@ final class ShotPictures: ObservableObject {
             if let img = picture.liveImage {
                 picture.release()
                 taking.remove(shot)
-                done?(save(img, shot: shot))
-            } else if tries < 40 {
+                let ok = save(img, shot: shot)
+                log("\(c.name): \(ok ? "saved \(img.width)x\(img.height) to \(url(shot).path)" : "couldn't write \(url(shot).path)")")
+                done?(ok)
+            } else if tries < 100 {
                 tries += 1
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: look)
             } else {
                 picture.release()
                 taking.remove(shot)
+                log("\(c.name): no picture came in within 10 seconds")
                 done?(false)
             }
         }
         look()
+    }
+
+    /// ~/Library/Logs/CueVideo/shots.log, as for bumpers. Not from self-tests.
+    private func log(_ line: String) {
+        guard !folder.path.contains("cuevideo-shot-pictures") else { return }
+        let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/CueVideo")
+        let url = dir.appendingPathComponent("shots.log")
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+        let data = Data("\(f.string(from: Date()))  \(line)\n".utf8)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(data); try? h.close() } else { try? data.write(to: url) }
     }
 }

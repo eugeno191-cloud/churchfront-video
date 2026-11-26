@@ -189,7 +189,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         booth.store.attach(booth)
         // A shot's picture is taken when it's saved or updated to now, never when it's recalled.
         booth.ptz.onShotSaved = { [weak booth] cam, shot in
-            guard let c = booth?.ptz.cameras.first(where: { $0.id == cam }) else { return }
+            guard let c = booth?.ptz.cameras.first(where: { $0.id == cam }) else {
+                BumperPlayer.write("shot saved for a camera that isn't in the list"); return
+            }
             ShotPictures.shared.capture(c, shot: shot)
         }
         AutoTracker.shared.attach()
