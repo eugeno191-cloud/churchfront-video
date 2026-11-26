@@ -328,19 +328,22 @@ final class BumperPlayer: ObservableObject {
         }
     }
 
-    /// Locks the stream output on the bumper, then unlocks the projector. In that order, so
-    /// the projector's changes never reach the stream; for a moment both are locked, and
-    /// nothing is sent then.
+    /// Unlocks the projector, then locks the stream output on the bumper. In that order:
+    /// FreeShow turns down a lock that would leave every output locked (it keeps that output
+    /// unlocked and shows "one output" instead), so locking the stream first would fail
+    /// silently and both would end up unlocked. For a moment both take content.
     @MainActor
     private func freeProjector(_ client: FreeShowClient) async {
         let s = setup
-        guard (try? await client.lock(s.streamOutput, true)) != nil else { return }
-        projectorFree = true
         for id in changed.locked { try? await client.lock(id, false) }
+        projectorFree = (try? await client.lock(s.streamOutput, true)) != nil
+        // If the stream couldn't be locked, lock the projector again: the bumper stays safe
+        // on the stream, and the projector waits as before.
+        if !projectorFree { for id in changed.locked { try? await client.lock(id, true) } }
     }
 
     /// Undoes freeProjector: unlocks the stream, then locks the projector again. In that order
-    /// so the two are never locked together (FreeShow then sends to every output).
+    /// so the two are never locked together (FreeShow turns that lock down).
     @MainActor
     private func takeStreamBack(_ client: FreeShowClient) async {
         guard projectorFree else { return }

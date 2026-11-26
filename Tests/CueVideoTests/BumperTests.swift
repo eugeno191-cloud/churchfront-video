@@ -4,7 +4,7 @@ import XCTest
 
 /// A pretend FreeShow REST API (port 5506), inside the test process, with two outputs as at
 /// church: Main (the projector, id "default") and Stream (id "stream1"). Like FreeShow, new
-/// content goes to the unlocked outputs (to all of them when every one is locked), and "time
+/// content goes to the unlocked outputs, one output always stays unlocked, and "time
 /// left" and get_output without an id are about the first unlocked one, by name. A played
 /// video runs for `length` seconds; a background loop never ends.
 final class FakeFreeShow: URLProtocol {
@@ -80,7 +80,11 @@ final class FakeFreeShow: URLProtocol {
             case "clear_background": for i in Self.receiving { Self.outputs[i].background = nil }
             case "clear_slide": for i in Self.receiving { Self.outputs[i].slide = false }
             case "lock_output":
-                if let i = Self.outputs.firstIndex(where: { $0.id == body["outputId"] as? String }) { Self.outputs[i].locked = body["value"] as? Bool ?? false }
+                // Like FreeShow, a lock that would leave every output locked is turned down.
+                if let i = Self.outputs.firstIndex(where: { $0.id == body["outputId"] as? String }) {
+                    let lock = body["value"] as? Bool ?? false
+                    if !lock || Self.outputs.indices.contains(where: { $0 != i && !Self.outputs[$0].locked }) { Self.outputs[i].locked = lock }
+                }
             case "change_output_style":
                 let o = body["outputId"] as? String
                 if let i = Self.outputs.firstIndex(where: { $0.id == o || $0.name == o }) { Self.outputs[i].style = body["styleId"] as? String ?? "" }
@@ -143,7 +147,7 @@ final class BumperTests: XCTestCase {
         XCTAssertEqual(started, .some(nil))
         wait(6) { p.phase == .idle }
         XCTAssertEqual(steps, ["lock default on", "style stream1 none", "play_media", "clear_slide", "clear_overlays",
-                               "lock stream1 on", "lock default off",          // the projector is free while it plays
+                               "lock default off", "lock stream1 on",          // the projector is free while it plays
                                "lock stream1 off", "lock default on",          // the end: only the stream is cleared
                                "clear_background", "style stream1 566104ca88d", "lock default off"])
         XCTAssertEqual(booth.atem.state.program[0], 1)
@@ -257,6 +261,19 @@ final class BumperTests: XCTestCase {
         XCTAssertTrue(FakeFreeShow.main.slide, "and its slide")
         XCTAssertFalse(FakeFreeShow.main.locked); XCTAssertFalse(FakeFreeShow.stream.locked)
         XCTAssertEqual(FakeFreeShow.stream.style, "566104ca88d")
+    }
+
+    func testFreeShowKeepsOneOutputUnlocked() {
+        let c = FreeShowClient(host: "10.0.0.60", port: 5506, session: FakeFreeShow.session) { nil }
+        let done = expectation(description: "locks")
+        Task {
+            try await c.lock("default", true)
+            try await c.lock("stream1", true)   // turned down: it would leave nothing unlocked
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 3)
+        XCTAssertTrue(FakeFreeShow.main.locked)
+        XCTAssertFalse(FakeFreeShow.stream.locked)
     }
 
     func testAnotherBumperTakesOverWithNoFade() {
