@@ -25,6 +25,8 @@ final class FreeShowClient {
     let port: Int
     private let password: () -> String?
     private let session: URLSession
+    /// Hears each command sent and how it went (not the "what's playing" questions).
+    var log: ((String) -> Void)?
 
     init(host: String, port: Int, session: URLSession? = nil, password: @escaping () -> String?) {
         self.host = host.trimmingCharacters(in: .whitespaces)
@@ -48,8 +50,14 @@ final class FreeShowClient {
         if let p = password(), !p.isEmpty { req.setValue("Bearer \(p)", forHTTPHeaderField: "Authorization") }
         req.httpBody = try JSONSerialization.data(withJSONObject: extra.merging(["action": action]) { a, _ in a })
         let data: Data, response: URLResponse
-        do { (data, response) = try await session.data(for: req) } catch { throw FreeShowError.unreachable(error.localizedDescription) }
+        let quiet = action.hasPrefix("get_")
+        let what = ([action] + extra.compactMap { k, v in k == "data" ? nil : "\(k)=\(v)" }.sorted()).joined(separator: " ")
+        do { (data, response) = try await session.data(for: req) } catch {
+            log?("\(what): no answer (\(error.localizedDescription))")
+            throw FreeShowError.unreachable(error.localizedDescription)
+        }
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if !quiet { log?("\(what): \(code)") }
         if code == 401 { throw FreeShowError.password }
         if code == 204 || data.isEmpty { return nil }
         guard (200..<300).contains(code) else { throw FreeShowError.unreachable("it answered \(code)") }
@@ -175,7 +183,10 @@ final class BumperPlayer: ObservableObject {
 
     var setup: FreeShowSetup { setupOverride?() ?? booth.store.config.freeshow }
     var client: FreeShowClient? {
-        setup.host.isEmpty ? nil : FreeShowClient(host: setup.host, port: setup.port, session: session, password: password)
+        guard !setup.host.isEmpty else { return nil }
+        let c = FreeShowClient(host: setup.host, port: setup.port, session: session, password: password)
+        if setupOverride == nil { c.log = { Self.write("  FreeShow \($0)") } }
+        return c
     }
 
     /// How long FreeShow gets to start a video before the bumper gives up (the switcher untouched).
@@ -188,106 +199,134 @@ final class BumperPlayer: ObservableObject {
     /// once it's on air (nil) or with what went wrong.
     func play(_ b: Bumper, started: ((String?) -> Void)? = nil) {
         guard let client else { started?("FreeShow isn't set up. Add its address in Setup."); return }
-        let switching: Bool
         switch phase {
-        case .idle: switching = false
+        case .idle: break
         case .starting, .playing:
             if b == current { started?("\(b.name) is already playing."); return }
-            switching = true
             replaced.insert(run)
         case .ending: started?("A bumper is just ending. Try again in a moment."); return
         }
-        let atem = booth.atem, me = booth.me
         run += 1
         let r = run
-        if !switching { returnTo = (atem.state.program[me], atem.state.preview[me]) }
         current = b; phase = .starting; timeLeft = nil; problem = nil
-        Task { @MainActor in await self.perform(b, r, client, switching: switching, started: started) }
+        log("pressed \(b.name)\(b.loop ? " (loops)" : "")")
+        queue { await self.perform(b, r, client, started: started) }
     }
 
+    /// Bumper work runs one piece at a time: a switch or a stop waits for what's running to
+    /// notice it's been called off, so two never send FreeShow locks and clears at once.
+    private var task: Task<Void, Never>?
+    private func queue(_ work: @escaping @MainActor () async -> Void) {
+        let before = task
+        task = Task { @MainActor in
+            await before?.value
+            await work()
+        }
+    }
+
+    /// A bumper's video was sent to FreeShow and hasn't been cleared yet.
+    private var videoOut = false
+    private struct CalledOff: Error {}
+
     @MainActor
-    private func perform(_ b: Bumper, _ r: Int, _ client: FreeShowClient, switching: Bool, started: ((String?) -> Void)?) async {
+    private func perform(_ b: Bumper, _ r: Int, _ client: FreeShowClient, started: ((String?) -> Void)?) async {
         let atem = booth.atem, me = booth.me, s = setup, input = s.input
         // The caller hears exactly once: on air, or why not.
         var told = false
         func tell(_ why: String?) { if !told { told = true; started?(why) } }
+        /// Before each step: a newer press (Stop, or another bumper) takes over from here.
+        func check() throws { if r != run { throw CalledOff() } }
         do {
-            // Switching: the stream output takes new content again (the projector stays out).
-            if switching { await takeStreamBack(client) } else { try await prepare(client) }
-            if replaced.contains(r) { tell("Another bumper took over."); return }
+            try check()
+            if videoOut {
+                // Taking over from a bumper still out: the stream takes content again and the
+                // projector stays out; the switcher goes back where it was before the first.
+                await takeStreamBack(client)
+            } else {
+                returnTo = (atem.state.program[me], atem.state.preview[me])
+                try await prepare(client)
+            }
+            try check()
+            videoOut = true
             try await client.play(b.path, loop: b.loop)
             // Wait for this video to be running before anything goes to air. A long file can
             // take FreeShow several seconds to load (a 5-minute one took about 4), and a
             // looping background has time left too, so check it's this file.
             var left = 0.0
             for _ in 0..<Int(Self.startWait / 0.2) {
-                if r != run { break }
+                try check()
                 if try await client.isPlaying(b.path) { left = try await client.timeLeft(); if left > 0 { break } }
                 try await Task.sleep(nanoseconds: 200_000_000)
             }
-            if replaced.contains(r) { tell("Another bumper took over."); return }
-            guard r == run else { tell("Stopped before it went on air."); return }
+            try check()
             guard left > 0 else { throw FreeShowError.didNotStart }
             // The video is running: take any verse, lyric or overlay off it, so nothing is laid
             // over the bumper. (With stream only, the projector is locked and keeps its words.)
             try? await client.clearWords()
+            try check()
             if atem.state.program[me] != input {
                 atem.setPreview(input, me: me)
                 try await Task.sleep(nanoseconds: 80_000_000)
                 atem.auto(me: me)
             }
+            try check()
             // Stream only: lock the stream on the bumper and free the projector. Only when the
             // stream output's id is right (FreeShow then says the bumper is on it): a lock
             // by a wrong id does nothing, and the projector's slides would land on the stream.
             if s.streamOnly, !changed.locked.isEmpty,
                let path = try? await client.backgroundPath(output: s.streamOutput), FreeShowClient.same(path, b.path) {
+                try check()
                 await freeProjector(client)
             }
+            try check()
             phase = .playing
             timeLeft = b.loop ? nil : left
+            log("\(b.name) on air\(projectorFree ? ", projector free" : "")")
             tell(nil)
             // Fade back just before the end, so the fade finishes as the video does. FreeShow
             // tells the time left of the first unlocked output, which is the projector once
-            // it's free: then count down here, and look every second that the stream still
-            // plays the bumper (someone may have cleared it).
-            // A looping bumper has no end: it plays until stopped, so only look that it's still
-            // there (someone may have cleared it in FreeShow).
+            // it's free: then count down here. A looping bumper has no end: it plays until
+            // stopped. Either way, look each second that the bumper is still out (someone may
+            // have cleared it in FreeShow).
             let end = Date().addingTimeInterval(left)
             var looked = Date()
-            /// Whether the bumper is gone from the output it plays on. A failed question isn't
-            /// an answer: only a different (or no) video ends it.
             func gone() async -> Bool {
                 guard Date().timeIntervalSince(looked) >= 1 else { return false }
                 looked = Date()
                 do {
                     let now = try await client.backgroundPath(output: projectorFree ? s.streamOutput : nil)
                     return now.map { FreeShowClient.same($0, b.path) } != true
-                } catch { return false }
+                } catch { return false }   // a failed question isn't an answer
             }
-            while r == run {
+            while true {
+                try check()
                 if b.loop {
-                    if await gone() { break }
+                    if await gone() { log("\(b.name) was cleared in FreeShow"); break }
                 } else if projectorFree {
                     left = max(0, end.timeIntervalSinceNow)
-                    if await gone() { break }
+                    if await gone() { log("\(b.name) was cleared in FreeShow"); break }
                 } else {
                     left = try await client.timeLeft()
                 }
-                guard r == run else { break }
+                try check()
                 if !b.loop {
                     timeLeft = left
                     if left <= fadeSeconds + 0.2 { break }
                 }
                 try await Task.sleep(nanoseconds: 250_000_000)
             }
-            guard r == run else { return }
+            try check()
             await fadeBack(client)
+        } catch is CalledOff {
+            tell(replaced.contains(r) ? "Another bumper took over." : "Stopped before it went on air.")
         } catch {
-            if replaced.contains(r) { tell("Another bumper took over."); return }
-            guard r == run else { tell("Stopped before it went on air."); return }
+            guard r == run else { tell(replaced.contains(r) ? "Another bumper took over." : "Stopped before it went on air."); return }
             let why = (error as? FreeShowError)?.description ?? "\(error)"
+            log("\(b.name) failed: \(why)")
             problem = why
-            if phase == .playing || switching { await fadeBack(client) } else { await putBack(client); reset() }
+            // Not on air yet and not stream only: the video was going to the projector, which
+            // may have its own background playing; leave that.
+            await fadeBack(client, clear: phase == .playing || s.streamOnly)
             tell(why)
         }
     }
@@ -296,12 +335,14 @@ final class BumperPlayer: ObservableObject {
     func stop() {
         guard phase == .starting || phase == .playing, let client else { return }
         run += 1
-        Task { @MainActor in await self.fadeBack(client) }
+        phase = .ending
+        log("stop pressed")
+        queue { await self.fadeBack(client) }
     }
 
     /// Fades back (if the bumper is still what's Live), clears the video and puts FreeShow back.
     @MainActor
-    private func fadeBack(_ client: FreeShowClient) async {
+    private func fadeBack(_ client: FreeShowClient, clear: Bool = true) async {
         let atem = booth.atem, me = booth.me, input = setup.input
         phase = .ending
         // Only fade if the bumper is still what's Live: someone may have moved on already.
@@ -314,9 +355,28 @@ final class BumperPlayer: ObservableObject {
         }
         // Clear only the stream: the projector is locked again first, so its background stays.
         await takeStreamBack(client)
-        try? await client.clearBackground()
+        if clear && videoOut { try? await client.clearBackground() }
+        videoOut = false
         await putBack(client)
         reset()
+        log("ended")
+    }
+
+    /// What the bumper player did, for working out what went wrong at a service:
+    /// ~/Library/Logs/CueVideo/bumpers.log. Not written by tests.
+    private func log(_ line: String) {
+        guard setupOverride == nil else { return }
+        Self.write(line)
+    }
+
+    static func write(_ line: String) {
+        let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/CueVideo")
+        let url = dir.appendingPathComponent("bumpers.log")
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+        let data = Data("\(f.string(from: Date()))  \(line)\n".utf8)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(data); try? h.close() }
+        else { try? data.write(to: url) }
     }
 
     /// For a stream-only bumper: lock the other outputs and lift the stream output's style.

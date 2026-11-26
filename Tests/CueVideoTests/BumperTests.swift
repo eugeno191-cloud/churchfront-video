@@ -17,9 +17,13 @@ final class FakeFreeShow: URLProtocol {
     static var loadDelay = 0.0
     static var password: String?
     static var outputs: [Output] = []
+    /// How long each answer takes, as over a real network (the command itself is done at once).
+    static var answerDelay = 0.0
+    /// Every video each output has had as its background, to catch one reaching the projector.
+    static var shown: [String: [String]] = [:]
 
     static func reset() {
-        actions = []; auth = []; length = 2.5; loadDelay = 0; password = nil
+        actions = []; auth = []; length = 2.5; loadDelay = 0; password = nil; answerDelay = 0; shown = [:]
         outputs = [Output(id: "default", name: "Main"), Output(id: "stream1", name: "Stream", style: "566104ca88d")]
     }
 
@@ -76,7 +80,7 @@ final class FakeFreeShow: URLProtocol {
                 // FreeShow takes a moment to load the file; until then the old video keeps playing.
                 let loops = (body["data"] as? [String: Any])?["loop"] as? Bool ?? true
                 let path = body["path"] as? String ?? "", len = loops ? .infinity : Self.length, to = Self.receiving
-                let start = { if Self.length > 0 { for i in to { Self.outputs[i].background = Video(path: path, started: Date(), length: len) } } }
+                let start = { if Self.length > 0 { for i in to { Self.outputs[i].background = Video(path: path, started: Date(), length: len); Self.shown[Self.outputs[i].id, default: []].append(path) } } }
                 if Self.loadDelay > 0 { DispatchQueue.main.asyncAfter(deadline: .now() + Self.loadDelay, execute: start) } else { start() }
             case "clear_background": for i in Self.receiving { Self.outputs[i].background = nil }
             case "clear_slide": for i in Self.receiving { Self.outputs[i].slide = false }
@@ -102,9 +106,12 @@ final class FakeFreeShow: URLProtocol {
             default: break
             }
         }
-        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
-        if !out.isEmpty { client?.urlProtocol(self, didLoad: out) }
-        client?.urlProtocolDidFinishLoading(self)
+        let reply = { [self] in
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+            if !out.isEmpty { client?.urlProtocol(self, didLoad: out) }
+            client?.urlProtocolDidFinishLoading(self)
+        }
+        if Self.answerDelay > 0 { DispatchQueue.global().asyncAfter(deadline: .now() + Self.answerDelay, execute: reply) } else { reply() }
     }
 }
 
@@ -350,6 +357,60 @@ final class BumperTests: XCTestCase {
         XCTAssertFalse(once.contains("loop"))
         let again = try JSONDecoder().decode(Bumper.self, from: JSONEncoder().encode(Bumper(name: "A", path: "/a", loop: true)))
         XCTAssertTrue(again.loop)
+    }
+
+    func testSwitchingQuicklyOnASlowNetworkNeverTouchesTheProjector() {
+        let splash = Bumper(name: "Splash", path: "C:\\Videos\\splash.mp4")
+        let loop = Bumper(name: "Countdown", path: "C:\\Videos\\countdown.mp4", loop: true)
+        FakeFreeShow.loopBackground("C:\\Backgrounds\\loop.mp4")
+        FakeFreeShow.showSlide()
+        FakeFreeShow.length = 30
+        FakeFreeShow.answerDelay = 0.12
+        let p = player(streamOnly: true)
+        var told: [String?] = []
+        p.play(loop) { told.append($0) }
+        wait(4) { p.phase == .playing }
+        // Pressed in quick succession, while commands are still on their way.
+        p.play(splash) { told.append($0) }
+        wait(0.3) { false }
+        p.play(welcome) { told.append($0) }
+        wait(0.1) { false }
+        p.play(splash) { told.append($0) }
+        wait(6) { p.phase == .playing }
+        XCTAssertEqual(p.current, splash)
+        XCTAssertEqual(FakeFreeShow.stream.background?.path, splash.path)
+        XCTAssertTrue(FakeFreeShow.stream.locked); XCTAssertFalse(FakeFreeShow.main.locked)
+        // Someone changes slides on the projector while it plays.
+        FakeFreeShow.showSlide()
+        XCTAssertFalse(FakeFreeShow.stream.slide)
+        p.stop()
+        wait(5) { p.phase == .idle }
+        XCTAssertEqual(told.count, 4, "every press heard back once")
+        XCTAssertEqual(FakeFreeShow.shown["default"] ?? [], [], "no bumper ever reached the projector")
+        XCTAssertEqual(FakeFreeShow.main.background?.path, "C:\\Backgrounds\\loop.mp4", "the projector keeps its background")
+        XCTAssertTrue(FakeFreeShow.main.slide, "and its slide")
+        XCTAssertNil(FakeFreeShow.stream.background)
+        XCTAssertFalse(FakeFreeShow.main.locked); XCTAssertFalse(FakeFreeShow.stream.locked)
+        XCTAssertEqual(FakeFreeShow.stream.style, "566104ca88d")
+        XCTAssertEqual(booth.atem.state.program[0], 1, "faded back to what was Live before the first bumper")
+        XCTAssertEqual(booth.atem.state.preview[0], 2)
+    }
+
+    func testStopRightAfterAPressOnASlowNetwork() {
+        FakeFreeShow.loopBackground("C:\\Backgrounds\\loop.mp4")
+        FakeFreeShow.showSlide()
+        FakeFreeShow.length = 30
+        FakeFreeShow.answerDelay = 0.12
+        let p = player(streamOnly: true)
+        p.play(welcome)
+        wait(0.2) { false }
+        p.stop()
+        wait(6) { p.phase == .idle }
+        XCTAssertEqual(p.phase, .idle)
+        XCTAssertEqual(FakeFreeShow.main.background?.path, "C:\\Backgrounds\\loop.mp4")
+        XCTAssertTrue(FakeFreeShow.main.slide)
+        XCTAssertFalse(FakeFreeShow.main.locked); XCTAssertFalse(FakeFreeShow.stream.locked)
+        XCTAssertEqual(booth.atem.state.program[0], 1)
     }
 
     func testPressingThePlayingBumperAgainIsTurnedDown() {
