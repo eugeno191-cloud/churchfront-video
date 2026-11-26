@@ -42,8 +42,12 @@ struct VolunteerView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                FramePanel().fixedSize()
-                TakePanel().frame(width: 250).frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: T.s2) {
+                    SectionTitle(title: "Move camera", hint: "the camera on Next")
+                    FramePanel()
+                }
+                .fixedSize()
+                TakePanel().frame(width: TakePanel.width).frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(T.s4)
             // Tall enough for the shot deck's four rows of tiles.
@@ -662,83 +666,95 @@ struct TakePanel: View {
         let fading = s.inTransition[me] ?? false
         let black = s.ftbBlack[me] ?? false
         VStack(alignment: .leading, spacing: T.s3) {
-            // The two ways to take Next live, side by side and the same size.
-            HStack(spacing: T.s2) {
-                Button { Booth.shared.fade() } label: {
-                    VStack(spacing: 2) {
-                        Text(fading ? "FADING" : "FADE").font(.sans(24, .bold))
-                        Text(fading ? "\(store.label(s.program[me], s)) to \(store.label(s.preview[me], s))"
-                                    : "\(String(format: "%.1f", Double(s.mixRate[me] ?? 30) / 30)) s · Return")
-                            .font(.sans(11, .medium)).opacity(0.85).lineLimit(1).minimumScaleFactor(0.7)
-                    }
-                    .foregroundStyle(.white).padding(.horizontal, 4)
-                    .frame(width: 121, height: 92)
-                    .background(RoundedRectangle(cornerRadius: T.rMD).fill(T.program.opacity(fading ? 0.55 : 1)))
-                    // How far the fade has run, along the bottom edge.
-                    .overlay(alignment: .bottomLeading) {
-                        if fading { Rectangle().fill(Color.white).frame(width: 121 * min(1, max(0, s.position[me] ?? 0)), height: 5) }
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: T.rMD))
-                    .overlay(RoundedRectangle(cornerRadius: T.rMD).stroke(Color.white.opacity(0.25)))
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(PressStyle())
-                .help("Fade from Live to Next (Return)")
-                Button { Booth.shared.cut() } label: {
-                    VStack(spacing: 2) {
-                        Text("CUT").font(.sans(24, .bold))
-                        Text("Space").font(.sans(11, .medium)).opacity(0.85)
-                    }
-                    .foregroundStyle(T.ink)
-                    .frame(width: 121, height: 92)
-                    .background(RoundedRectangle(cornerRadius: T.rMD).fill(T.surfaceRaised))
-                    .overlay(RoundedRectangle(cornerRadius: T.rMD).stroke(T.lineStrong))
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(PressStyle())
-                .help("Switch to Next instantly (Space)")
-            }
-            // Under them, the things that are on or off: black, then keys such as lower
-            // thirds. Lit while on air, press to turn on or off.
-            LazyVGrid(columns: [GridItem(.fixed(121), spacing: T.s2), GridItem(.fixed(121))], alignment: .leading, spacing: T.s2) {
-                let ftb = s.ftbInTransition[me] ?? false
-                PanelButton(title: "BLACK", subtitle: black ? "IN BLACK" : (ftb ? "FADING" : "OFF"), lit: black || ftb ? T.program : nil,
-                            width: 121, height: 48, titleSize: 14, blink: black) { atem.fadeToBlack(me: me) }
-                    .help(black ? "Fade back up from black" : "Fade everything to black")
-                ForEach(store.config.keys) { k in
-                    let on = k.isOn(s)
-                    PanelButton(title: k.label.uppercased(), subtitle: on ? "ON AIR" : "OFF", lit: on ? T.program : nil,
-                                width: 121, height: 48, titleSize: 13) { k.toggle(atem) }
-                        .help(on ? "Take \(k.label) off (\(k.target))" : "Put \(k.label) on (\(k.target))")
-                }
-                // The switcher's Preaching On and Off macros on one button: lit after On ran,
-                // and the next press runs Off. Shown when the switcher has both macros.
-                if let m = preaching.macros {
-                    let running = s.macroRunning == m.on || s.macroRunning == m.off
-                    PanelButton(title: "PREACHING", subtitle: running ? "RUNNING" : (preaching.on ? "ON" : "OFF"),
-                                lit: running ? T.warning : (preaching.on ? T.program : nil),
-                                width: 121, height: 48, titleSize: 13, blink: running) { preaching.toggle() }
-                        .disabled(s.macroRunning != nil)
-                        .help(preaching.on ? "Run the switcher's \(s.macros[m.off] ?? "Preaching Off") macro"
-                                           : "Run the switcher's \(s.macros[m.on] ?? "Preaching On") macro")
-                }
-                // Bumper videos in FreeShow: one press plays it and fades to it, and it fades
-                // back by itself at the end. Pressed again while it plays, it ends early; another
-                // bumper pressed while one plays takes over.
-                if !store.config.freeshow.host.isEmpty {
-                    ForEach(store.config.freeshow.bumpers) { b in
-                        let mine = bumpers.current?.id == b.id
-                        PanelButton(title: b.name.uppercased(), subtitle: bumperSubtitle(mine),
-                                    lit: mine ? (bumpers.phase == .playing ? T.program : T.warning) : nil,
-                                    width: 121, height: 48, titleSize: 13) {
-                            if mine { bumpers.stop() } else { bumpers.play(b) }
+            // 1. Take live: the two ways to take Next live, side by side.
+            VStack(alignment: .leading, spacing: T.s1) {
+                SectionTitle(title: "Take live", hint: "Next becomes Live")
+                HStack(spacing: T.s2) {
+                    Button { Booth.shared.fade() } label: {
+                        VStack(spacing: 2) {
+                            Text(fading ? "FADING" : "FADE").font(.sans(24, .bold))
+                            Text(fading ? "\(store.label(s.program[me], s)) to \(store.label(s.preview[me], s))"
+                                        : "\(String(format: "%.1f", Double(s.mixRate[me] ?? 30) / 30)) s · Return")
+                                .font(.sans(11, .medium)).opacity(0.85).lineLimit(1).minimumScaleFactor(0.7)
                         }
-                        // Another bumper can take over while one plays, but not while one ends.
-                        .disabled(bumpers.phase == .ending && !mine)
-                        .opacity(bumpers.phase == .ending && !mine ? 0.45 : 1)
-                        .help(mine ? "End \(b.name) now and fade back" + (b.loop ? " (it loops until you do)" : "")
-                              : bumpers.phase == .idle ? "Play \(b.name) in FreeShow, fade to it, and fade back when it ends"
-                              : "Switch to \(b.name) on the stream, with no fade")
+                        .foregroundStyle(.white).padding(.horizontal, 4)
+                        .frame(width: Self.wide, height: 80)
+                        .background(RoundedRectangle(cornerRadius: T.rMD).fill(T.program.opacity(fading ? 0.55 : 1)))
+                        // How far the fade has run, along the bottom edge.
+                        .overlay(alignment: .bottomLeading) {
+                            if fading { Rectangle().fill(Color.white).frame(width: Self.wide * min(1, max(0, s.position[me] ?? 0)), height: 5) }
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: T.rMD))
+                        .overlay(RoundedRectangle(cornerRadius: T.rMD).stroke(Color.white.opacity(0.25)))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(PressStyle())
+                    .help("Fade from Live to Next (Return)")
+                    Button { Booth.shared.cut() } label: {
+                        VStack(spacing: 2) {
+                            Text("CUT").font(.sans(24, .bold))
+                            Text("Space").font(.sans(11, .medium)).opacity(0.85)
+                        }
+                        .foregroundStyle(T.ink)
+                        .frame(width: Self.wide, height: 80)
+                        .background(RoundedRectangle(cornerRadius: T.rMD).fill(T.surfaceRaised))
+                        .overlay(RoundedRectangle(cornerRadius: T.rMD).stroke(T.lineStrong))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(PressStyle())
+                    .help("Switch to Next instantly (Space)")
+                }
+            }
+            // 2. On / Off: things that stay on until pressed again. Lit red while on.
+            VStack(alignment: .leading, spacing: T.s1) {
+                SectionTitle(title: "On / Off", hint: "press again to turn off")
+                LazyVGrid(columns: Self.columns, alignment: .leading, spacing: T.s2) {
+                    let ftb = s.ftbInTransition[me] ?? false
+                    PanelButton(title: "BLACK", subtitle: black ? "IN BLACK" : (ftb ? "FADING" : "OFF"), lit: black || ftb ? T.program : nil,
+                                width: Self.button, height: 48, titleSize: 13, blink: black, icon: "power") { atem.fadeToBlack(me: me) }
+                        .help(black ? "Fade back up from black" : "Fade everything to black")
+                    ForEach(store.config.keys) { k in
+                        let on = k.isOn(s)
+                        PanelButton(title: k.label.uppercased(), subtitle: on ? "ON AIR" : "OFF", lit: on ? T.program : nil,
+                                    width: Self.button, height: 48, titleSize: 13, icon: "power") { k.toggle(atem) }
+                            .help(on ? "Take \(k.label) off (\(k.target))" : "Put \(k.label) on (\(k.target))")
+                    }
+                    // The switcher's Preaching On and Off macros on one button: lit after On ran,
+                    // and the next press runs Off. Shown when the switcher has both macros.
+                    if let m = preaching.macros {
+                        let running = s.macroRunning == m.on || s.macroRunning == m.off
+                        PanelButton(title: "PREACHING", subtitle: running ? "RUNNING" : (preaching.on ? "ON" : "OFF"),
+                                    lit: running ? T.warning : (preaching.on ? T.program : nil),
+                                    width: Self.button, height: 48, titleSize: 13, blink: running, icon: "power") { preaching.toggle() }
+                            .disabled(s.macroRunning != nil)
+                            .help(preaching.on ? "Run the switcher's \(s.macros[m.off] ?? "Preaching Off") macro"
+                                               : "Run the switcher's \(s.macros[m.on] ?? "Preaching On") macro")
+                    }
+                }
+            }
+            // 3. Stream videos: bumper videos in FreeShow, stream only. One press plays it and
+            // fades to it, and it fades back by itself at the end. Pressed again while it plays,
+            // it ends early; another bumper pressed while one plays takes over.
+            if !store.config.freeshow.host.isEmpty && !store.config.freeshow.bumpers.isEmpty {
+                VStack(alignment: .leading, spacing: T.s1) {
+                    SectionTitle(title: "Stream videos", hint: store.config.freeshow.streamOnly ? "stream only · press again to stop" : "press again to stop",
+                                 color: T.accent)
+                    LazyVGrid(columns: Self.columns, alignment: .leading, spacing: T.s2) {
+                        ForEach(store.config.freeshow.bumpers) { b in
+                            let mine = bumpers.current?.id == b.id
+                            PanelButton(title: b.name.uppercased(), subtitle: bumperSubtitle(mine),
+                                        lit: mine ? (bumpers.phase == .playing ? T.program : T.warning) : nil,
+                                        width: Self.button, height: 48, titleSize: 12,
+                                        icon: mine ? "stop.fill" : (b.loop ? "repeat" : "play.fill"), outline: T.accent) {
+                                if mine { bumpers.stop() } else { bumpers.play(b) }
+                            }
+                            // Another bumper can take over while one plays, but not while one ends.
+                            .disabled(bumpers.phase == .ending && !mine)
+                            .opacity(bumpers.phase == .ending && !mine ? 0.45 : 1)
+                            .help(mine ? "End \(b.name) now and fade back" + (b.loop ? " (it loops until you do)" : "")
+                                  : bumpers.phase == .idle ? "Play \(b.name) in FreeShow, fade to it, and fade back when it ends"
+                                  : "Switch to \(b.name) on the stream, with no fade")
+                        }
                     }
                 }
             }
@@ -748,13 +764,20 @@ struct TakePanel: View {
                     Button { bumpers.problem = nil } label: { Image(systemName: "xmark").font(.system(size: 9, weight: .bold)) }
                         .buttonStyle(.plain).foregroundStyle(T.inkSubtle)
                 }
-                .frame(width: 250, alignment: .leading)
+                .frame(width: Self.width, alignment: .leading)
             }
         }
     }
 }
 
 extension TakePanel {
+    /// Three buttons across, so each section fits on one row.
+    static let button: CGFloat = 112
+    static let width: CGFloat = button * 3 + T.s2 * 2
+    /// Fade and Cut share the row half and half.
+    static var wide: CGFloat { (width - T.s2) / 2 }
+    static var columns: [GridItem] { Array(repeating: GridItem(.fixed(button), spacing: T.s2), count: 3) }
+
     /// What a bumper button says under its name: PLAY, STARTING, the time left, or ENDING.
     func bumperSubtitle(_ mine: Bool) -> String {
         guard mine else { return bumpers.phase == .idle ? "PLAY" : "SWITCH" }

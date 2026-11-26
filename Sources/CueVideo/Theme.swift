@@ -133,6 +133,10 @@ struct PanelButton: View {
     var height: CGFloat = 56
     var titleSize: CGFloat = 14
     var blink = false
+    /// A small symbol before the title, such as play.fill for a video.
+    var icon: String? = nil
+    /// The outline while off, so one kind of button reads apart from another.
+    var outline: Color? = nil
     let action: () -> Void
 
     var body: some View {
@@ -140,7 +144,10 @@ struct PanelButton: View {
             TimelineView(.periodic(from: .now, by: 0.4)) { ctx in
                 let on = lit != nil && (!blink || Int(ctx.date.timeIntervalSinceReferenceDate / 0.4) % 2 == 0)
                 VStack(spacing: 2) {
-                    Text(title).font(.sans(titleSize, .bold)).lineLimit(1).minimumScaleFactor(0.6)
+                    HStack(spacing: 4) {
+                        if let icon { Image(systemName: icon).font(.system(size: titleSize - 3, weight: .bold)) }
+                        Text(title).font(.sans(titleSize, .bold)).lineLimit(1).minimumScaleFactor(0.6)
+                    }
                     if let subtitle { Text(subtitle).font(.sans(9, .medium)).lineLimit(1).opacity(0.8) }
                 }
                 .padding(.horizontal, 4)
@@ -151,11 +158,24 @@ struct PanelButton: View {
                         .fill(on ? (lit ?? T.surfaceRaised) : T.surfaceRaised)
                         .shadow(color: on ? (lit ?? .clear).opacity(0.55) : .clear, radius: 8)
                 )
-                .overlay(RoundedRectangle(cornerRadius: T.rMD).stroke(on ? Color.white.opacity(0.25) : T.line, lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: T.rMD).stroke(on ? Color.white.opacity(0.25) : (outline ?? T.line), lineWidth: outline == nil || on ? 1 : 1.5))
                 .contentShape(Rectangle())
             }
         }
         .buttonStyle(PressStyle())
+    }
+}
+
+/// A section heading on the Operate page: a caps label and a short hint after it.
+struct SectionTitle: View {
+    let title: String
+    var hint: String? = nil
+    var color: Color = T.inkSubtle
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: T.s2) {
+            Text(title).panelLabel(color)
+            if let hint { Text(hint).font(.sans(11)).foregroundStyle(T.inkSubtle).lineLimit(1) }
+        }
     }
 }
 
