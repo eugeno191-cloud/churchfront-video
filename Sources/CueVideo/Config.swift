@@ -3,6 +3,14 @@ import Combine
 import CueATEM
 
 /// One tile in the volunteer's source row: an ATEM input, with an optional friendlier name.
+/// A fader on the Operate page's audio mixer: an audio source on the switcher (a video input
+/// by number, XLR 1001, RCA 1201, media players 2001 and 2002) and what to call it.
+struct AudioChannel: Codable, Hashable, Identifiable {
+    var input: Int
+    var label: String?
+    var id: Int { input }
+}
+
 struct VolunteerSource: Codable, Hashable, Identifiable {
     var input: Int
     var label: String?
@@ -263,10 +271,13 @@ struct CueConfig: Codable, Equatable {
     var zowietek = ZowietekSetup()
     /// FreeShow, for the operator's bumper buttons.
     var freeshow = FreeShowSetup()
+    /// The faders on the Operate page, left to right. Left out: every input whose audio is
+    /// on or follows video, and the XLR and RCA inputs.
+    var audio: [AudioChannel]?
 
     init() {}
 
-    private enum Keys: String, CodingKey { case atemHost, me, sources, cameras, keys, trackSpeed, ptzSpeed, trackTilt, trackZoom, mixNames, pictures, screens, routes, framing, trackTuning, zowietek, freeshow }
+    private enum Keys: String, CodingKey { case atemHost, me, sources, cameras, keys, trackSpeed, ptzSpeed, trackTilt, trackZoom, mixNames, pictures, screens, routes, framing, trackTuning, zowietek, freeshow, audio }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -287,6 +298,7 @@ struct CueConfig: Codable, Equatable {
         trackTuning = try c.decodeIfPresent(TrackTuning.self, forKey: .trackTuning) ?? TrackTuning()
         zowietek = try c.decodeIfPresent(ZowietekSetup.self, forKey: .zowietek) ?? ZowietekSetup()
         freeshow = try c.decodeIfPresent(FreeShowSetup.self, forKey: .freeshow) ?? FreeShowSetup()
+        audio = try c.decodeIfPresent([AudioChannel].self, forKey: .audio)
     }
 }
 

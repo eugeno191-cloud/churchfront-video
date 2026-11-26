@@ -16,6 +16,8 @@ struct VolunteerView: View {
             VStack(spacing: T.s3) {
                 HStack(spacing: T.s3) {
                     BusMonitor(title: "Next", input: atem.state.preview[booth.me], color: T.preview)
+                    // Sound, between the pictures: a fader per source and the master gain.
+                    AudioMixer()
                     BusMonitor(title: "Live", input: atem.state.program[booth.me], color: T.program)
                 }
                 .frame(maxHeight: .infinity)

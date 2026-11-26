@@ -28,6 +28,38 @@ public struct ATEMInput: Identifiable, Hashable {
     var sortKey: (Int, Int) { isExternal ? (0, id) : (1, id) }
 }
 
+/// One input of the classic (non Fairlight) audio mixer.
+public struct ATEMAudioInput: Equatable {
+    /// 0 video input, 1 media player, 2 external audio (XLR, RCA).
+    public var type: Int
+    /// 1 SDI, 2 HDMI, 32 XLR, 64 AES/EBU, 128 RCA, 256 internal.
+    public var port: Int
+    /// 0 off, 1 on, 2 audio follows video.
+    public var mix: Int
+    /// The fader as the switcher keeps it: 32768 is 0 dB, 65381 is +6 dB, 0 is silent.
+    public var level: Int
+    public var balance: Int
+    public init(type: Int = 0, port: Int = 0, mix: Int = 0, level: Int = 32768, balance: Int = 0) {
+        self.type = type; self.port = port; self.mix = mix; self.level = level; self.balance = balance
+    }
+}
+
+/// Audio levels in decibels and the switcher's own numbers, which run 0 (silent) to 65381 (+6 dB).
+public enum ATEMAudioLevel {
+    public static let maxDB = 6.0
+    public static let minDB = -60.0
+    /// Nil for silent.
+    public static func dB(_ level: Int) -> Double? {
+        let d = 20 * log10(Double(level) / 32768)
+        return level <= 0 || d < minDB ? nil : d
+    }
+    /// Nil gives silent.
+    public static func level(_ dB: Double?) -> Int {
+        guard let dB, dB >= minDB else { return 0 }
+        return min(65381, Int((32768 * pow(10, min(maxDB, dB) / 20)).rounded()))
+    }
+}
+
 public struct ATEMState: Equatable {
     public var product = ""
     public var version = ""
@@ -65,6 +97,10 @@ public struct ATEMState: Equatable {
     public var hasRecording = false
     /// Tally by source: bit 0 program, bit 1 preview (keys and DSKs included).
     public var tally: [Int: UInt8] = [:]
+    /// The classic audio mixer's inputs by audio source number (video inputs by number,
+    /// XLR 1001, RCA 1201, media players 2001 and 2002), and the master level.
+    public var audio: [Int: ATEMAudioInput] = [:]
+    public var audioMaster: Int?
 
     public init() {}
 
@@ -115,6 +151,8 @@ public struct ATEMLogEntry: Identifiable {
         case "DDsA": return "DSK \(Int(data.first ?? 0) + 1) auto"
         case "FtbA": return "Fade to black, \(me)"
         case "CAuS": return "Aux \(Int(data.count > 1 ? data[1] : 0) + 1): \(state.inputs[u16(2)]?.long ?? "input \(u16(2))")"
+        case "CAMI": return "Audio \(u16(2)): " + (data.first == 1 ? ["off", "on", "follow video"][min(2, Int(data.count > 4 ? data[4] : 0))] : "level \(ATEMAudioLevel.dB(u16(6)).map { String(format: "%.1f dB", $0) } ?? "silent")")
+        case "CAMM": return "Audio master: \(ATEMAudioLevel.dB(u16(2)).map { String(format: "%.1f dB", $0) } ?? "silent")"
         case "MAct": return u16(0) == 0xFFFF ? "Stop macro" : "Run macro \(u16(0) + 1)"
         case "StrR": return "Streaming \(data.first == 1 ? "start" : "stop")"
         case "RcTM": return "Recording \(data.first == 1 ? "start" : "stop")"
@@ -236,6 +274,12 @@ public final class ATEMClient: ObservableObject {
             if d.first == 1, d.count > 2 { s.style[m] = Int(d[2]) }
             if d.first == 2, d.count > 3 { s.nextSelection[m] = Int(d[3]) }
         case "CTMx": if d.count > 1 { s.mixRate[me] = Int(d[1]) }
+        case "CAMI" where d.count >= 8:
+            var a = s.audio[u16(2)] ?? ATEMAudioInput()
+            if d[0] & 1 != 0 { a.mix = Int(d[4]) }
+            if d[0] & 2 != 0 { a.level = u16(6) }
+            s.audio[u16(2)] = a
+        case "CAMM" where d.count >= 4: if d[0] & 1 != 0 { s.audioMaster = u16(2) }
         case "CKOn": if d.count > 2 { s.keyOnAir[me, default: [:]][Int(d[1])] = d[2] != 0 }
         case "CDsL": if d.count > 1 { s.dskOnAir[me] = d[1] != 0 }
         case "CDsT": if d.count > 1 { s.dskTie[me] = d[1] != 0 }
@@ -431,6 +475,11 @@ public final class ATEMClient: ObservableObject {
                 s.macros[i] = nil
             }
         case "MRPr" where d.count >= 4: s.macroRunning = d[0] & 1 != 0 ? u16(d, 2) : nil
+        case "AMIP" where d.count >= 14:
+            let b = u16(d, 12)
+            s.audio[u16(d, 0)] = ATEMAudioInput(type: Int(d[2]), port: u16(d, 6), mix: Int(d[8]), level: u16(d, 10),
+                                                balance: b >= 0x8000 ? b - 0x10000 : b)
+        case "AMMO" where d.count >= 2: s.audioMaster = u16(d, 0)
         case "StRS" where d.count >= 2: s.streamStatus = u16(d, 0); s.hasStreaming = true
         case "RTMS" where d.count >= 2: s.recordStatus = u16(d, 0); s.hasRecording = true
         case "TlSr" where d.count >= 2:
@@ -510,6 +559,11 @@ public final class ATEMClient: ObservableObject {
     public func setAux(_ aux: Int, _ source: Int) { send("CAuS", [1, b(aux)] + hl(source)) }
     public func runMacro(_ index: Int) { send("MAct", hl(index) + [0, 0]) }
     public func stopMacro() { send("MAct", [0xFF, 0xFF, 1, 0]) }
+    /// Audio on (1), off (0) or following video (2) for one audio source.
+    public func setAudioMix(_ input: Int, _ mix: Int) { send("CAMI", [1, 0] + hl(input) + [b(mix), 0, 0, 0, 0, 0, 0, 0]) }
+    /// An input's fader, in the switcher's numbers (see ATEMAudioLevel).
+    public func setAudioLevel(_ input: Int, _ level: Int) { send("CAMI", [2, 0] + hl(input) + [0, 0] + hl(level) + [0, 0, 0, 0]) }
+    public func setAudioMaster(_ level: Int) { send("CAMM", [1, 0] + hl(level) + [0, 0, 0, 0]) }
     public func setStreaming(_ on: Bool) { send("StrR", [on ? 1 : 0, 0, 0, 0]) }
     public func setRecording(_ on: Bool) { send("RcTM", [on ? 1 : 0, 0, 0, 0]) }
 }
